@@ -1,6 +1,6 @@
 [project]
 name = "sika-agent"
-version = "0.2.1"
+version = "0.3.0"
 description = "Sika Agent: a Ghanaian mobile money and pay-as-you-go credit agent environment, scored on the final wallet state, with hard penalties for harmful actions."
 tags = ["agent", "tool-use", "multi-turn", "finance", "mobile-money", "ghana", "twi", "africa", "safety", "prompt-injection"]
 requires-python = ">=3.11,<3.15"
