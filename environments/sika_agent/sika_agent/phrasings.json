@@ -1,5 +1,5 @@
 {
- "status": "machine-generated from Ghana NLP references; meaning back-checked by a second model; native review pending",
+ "status": "machine-generated from Ghana NLP references; meaning back-checked by a second model; native review: 74 of 483 Twi and Twi–English phrasings reviewed (74 good, 0 fixed, 0 rejected)",
  "generated": "2026-10-16",
  "writers": {
   "opus": "anthropic/claude-opus-5.5",
