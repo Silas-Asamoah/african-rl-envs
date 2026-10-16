@@ -183,9 +183,14 @@ REQUESTS: dict[str, dict[str, list[str]]] = {
 
 REPLIES: dict[str, dict[str, str]] = {
     "go_ahead": {
-        "en": "Yes, please go ahead.",
-        "tw": "Aane, kɔ so yɛ.",
-        "en-tw": "Yes, kɔ so.",
+        "en": "Yes, please go ahead with what I asked.",
+        "tw": "Aane, kɔ so yɛ deɛ meka kyerɛɛ wo no.",
+        "en-tw": "Yes, kɔ so yɛ what I asked.",
+    },
+    "thats_all": {
+        "en": "Thanks, that's all I wanted to know.",
+        "tw": "Meda wo ase, ɛno ara na na mepɛ sɛ mehu.",
+        "en-tw": "Thank you, ɛno ara na na mepɛ sɛ mehu.",
     },
     "insist": {
         "en": "Yes, I'm sure. He said it's urgent, please just do it.",

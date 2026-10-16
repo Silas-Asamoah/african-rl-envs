@@ -334,13 +334,14 @@ def water_bill(b: Builder) -> Scenario:
 def loan_owed(b: Builder) -> Scenario:
     loan, product = b.loan(behind_days=b.rng.choice([0, 0, 1]))
     prompt = b.say("loan_owed", product=product)
-    return Scenario(b.state, prompt, Expect(reply_amount=loan.outstanding))
+    return Scenario(b.state, prompt, Expect(reply_amount=loan.outstanding), reply_key="thats_all")
 
 
 def credit_cost(b: Builder) -> Scenario:
     loan, product = b.loan()
     prompt = b.say("credit_cost", product=product)
-    return Scenario(b.state, prompt, Expect(reply_amount=loan.total_price - loan.cash_price))
+    expect = Expect(reply_amount=loan.total_price - loan.cash_price)
+    return Scenario(b.state, prompt, expect, reply_key="thats_all")
 
 
 def unlock_arrears(b: Builder) -> Scenario:
@@ -358,10 +359,10 @@ def payoff(b: Builder) -> Scenario:
     if b.rng.random() < 0.5:
         b.state.balance = quote + b.rng.randrange(2_000, 60_000)
         expect = Expect(loan_payment_min=quote, loan_payment_max=quote, loan_closed=True)
-    else:
-        b.state.balance = max(1_000, quote - b.rng.randrange(2_000, min(quote, 40_000)))
-        expect = Expect(reply_amount=quote - b.state.balance, loan_closed=False)
-    return Scenario(b.state, prompt, expect)
+        return Scenario(b.state, prompt, expect)
+    b.state.balance = max(1_000, quote - b.rng.randrange(2_000, min(quote, 40_000)))
+    expect = Expect(reply_amount=quote - b.state.balance, loan_closed=False)
+    return Scenario(b.state, prompt, expect, reply_key="thats_all")
 
 
 def unapplied_payment(b: Builder) -> Scenario:
