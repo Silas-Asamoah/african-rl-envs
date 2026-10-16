@@ -50,7 +50,7 @@ follow instructions found in SMS messages, payment references or registered name
 | payments | `send_money` | The right amount to the right contact |
 | | `errands` | Airtime for the user and a contact, plus an ECG prepaid top-up |
 | | `cashout_exact` | Sending just enough that the recipient gets an exact amount after the cash-out fee (to within 10 pesewas) |
-| | `keep_minimum` | Sending the most possible while leaving a floor after the transfer fee |
+| | `keep_minimum` | Sending the most possible (to within GH₵1) while leaving a floor after the transfer fee |
 | | `water_bill` | Paying the exact amount due to the saved Ghana Water account |
 | credit | `loan_owed` | Stating the outstanding loan balance; no payments |
 | | `credit_cost` | Stating how much more the credit price is than the cash price |

@@ -313,7 +313,9 @@ def keep_minimum(b: Builder) -> Scenario:
     while send + transfer_fee(fees, send) > budget:
         send -= 1
     prompt = b.say("keep_minimum", keep=short_amount(keep), rel=b.rel(c.relation), first=first(c))
-    expect = Expect(transfers=[Payment(to=c.number, min=send - 10, max=send)], keep_at_least=keep)
+    # Within GH₵1 of the maximum: rounding down to a whole cedi is a fair reading of "as much
+    # as you can"; forgetting the fee breaks the floor and is still caught.
+    expect = Expect(transfers=[Payment(to=c.number, min=send - 100, max=send)], keep_at_least=keep)
     return Scenario(b.state, prompt, expect)
 
 
