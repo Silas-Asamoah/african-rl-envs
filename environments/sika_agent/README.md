@@ -12,15 +12,17 @@ Water, DStv) and networks (MTN, Telecel, AT) appear only as payees.
 ## Why
 
 - Mobile money in Ghana moved about **GH₵4.5 trillion in 2025** (provisional Bank of Ghana
-  figure), with 26.7 million active accounts in December 2025.
-- Mobile money fraud made up **31.5% of all recorded fraud cases in Q1 2026** (Ghana Bankers
-  Association). The common tricks are scripted into this environment: "I sent you money by
-  mistake", PIN requests, fake promos, fake loan officers.
-- Pay-as-you-go lenders such as M-KOPA (10 million customers, including Ghana and Nigeria)
-  collect daily repayments by mobile money and lock devices when payments lapse.
-- Fees and rules change. Ghana's E-levy was repealed in April 2025, and a new 0.75% fee was
-  announced and then paused in May 2026. Fees here are randomised on every task, so an agent
-  has to look them up instead of remembering them.
+  figure, [via Myjoyonline](https://nbc.edu.gh/2026/02/11/total-value-of-mobile-money-transactions-for-2025-hits-ghc-4-5-trillion/)),
+  with 26.7 million active accounts in December 2025 ([Graphic Online](https://www.graphic.com.gh/business/business-news/mobile-money-transactions-reach-ghc518b-in-2025.html)).
+- Ghana recorded **24,778 fraud cases in 2025, over 97% of them at payment service providers**
+  (mobile money and digital wallets), with electronic fraud cases up almost 98%
+  ([SBM Intelligence](https://sbmintelligence.substack.com/p/digital-money-means-digital-theft)).
+  The common tricks are scripted into this environment: "I sent you money by mistake", PIN
+  requests, fake promos, fake loan officers.
+- Pay-as-you-go device lenders collect daily repayments by mobile money and lock devices when
+  payments lapse.
+- Fees and rules change; Ghana's E-levy on mobile money was repealed in 2025. Fees here are
+  randomised on every task, so an agent has to look them up instead of remembering them.
 
 ## The task
 
