@@ -1,10 +1,12 @@
-"""Summarize a hosted sika-agent evaluation from its Prime traces.
+"""Summarize hosted sika-agent evaluations from their Prime traces.
 
     python3 scripts/summarize.py <evaluation-id> [<evaluation-id> ...]
+    python3 scripts/summarize.py --table <evaluation-id> [<evaluation-id> ...]
 
 Reads trace summaries with the `prime` CLI (no local trace files) and prints success and
-harmful-action rates per category, family and language. Reward encodes the verdict:
-1 success, 0 harmless failure, -1 harmful.
+harmful-action rates per category, family and language; `--table` prints one markdown row
+per evaluation instead. Reward encodes the verdict: 1 success, 0 harmless failure,
+-1 harmful.
 """
 
 import json
@@ -47,23 +49,51 @@ def table(title: str, groups: dict[str, list[float]]) -> None:
         print(f"{name:<22} {len(rows):>4} {rate(rows, 1.0):>8} {rate(rows, -1.0):>8}")
 
 
-def main(run_ids: list[str]) -> None:
+def grouped(run_id: str):
+    items = traces(run_id)
+    model = items[0]["model"]["id"] if items else "?"
+    by_cat, by_fam, by_lang = defaultdict(list), defaultdict(list), defaultdict(list)
+    errors = 0
+    for t in items:
+        m = TASK_RE.match(t.get("task_id") or "")
+        if not m:
+            continue
+        if t.get("execution", {}).get("has_error"):
+            errors += 1
+        reward = float(t["score"]["reward"])
+        family, language = m["family"], m["language"]
+        by_cat[CATEGORY_OF.get(family, "?")].append(reward)
+        by_fam[family].append(reward)
+        by_lang[language].append(reward)
+    return model, errors, by_cat, by_fam, by_lang
+
+
+def pct(rows: list[float], value: float) -> str:
+    return f"{100 * sum(r == value for r in rows) / len(rows):.0f}%" if rows else "–"
+
+
+def markdown(run_ids: list[str]) -> None:
+    langs = ["en", "tw", "en-tw"]
+    head = ["Model", "n", "Success", "Harmful", *(f"Success ({lang})" for lang in langs)]
+    head += [f"{c} success" for c in CATEGORIES] + ["scams harmful", "injection harmful"]
+    print("| " + " | ".join(head) + " |")
+    print("|" + "---|" * len(head))
     for run_id in run_ids:
-        items = traces(run_id)
-        model = items[0]["model"]["id"] if items else "?"
-        by_cat, by_fam, by_lang = defaultdict(list), defaultdict(list), defaultdict(list)
-        errors = 0
-        for t in items:
-            m = TASK_RE.match(t.get("task_id") or "")
-            if not m:
-                continue
-            if t.get("execution", {}).get("has_error"):
-                errors += 1
-            reward = float(t["score"]["reward"])
-            family, language = m["family"], m["language"]
-            by_cat[CATEGORY_OF.get(family, "?")].append(reward)
-            by_fam[family].append(reward)
-            by_lang[language].append(reward)
+        model, _, by_cat, _, by_lang = grouped(run_id)
+        everything = [r for rows in by_lang.values() for r in rows]
+        row = [model, str(len(everything)), pct(everything, 1.0), pct(everything, -1.0)]
+        row += [pct(by_lang[lang], 1.0) for lang in langs]
+        row += [pct(by_cat[c], 1.0) for c in CATEGORIES]
+        row += [pct(by_cat["scams"], -1.0), pct(by_cat["injection"], -1.0)]
+        print("| " + " | ".join(row) + " |")
+
+
+def main(run_ids: list[str]) -> None:
+    if run_ids and run_ids[0] == "--table":
+        markdown(run_ids[1:])
+        return
+    for run_id in run_ids:
+        model, errors, by_cat, by_fam, by_lang = grouped(run_id)
         everything = [r for rows in by_lang.values() for r in rows]
         print(f"=== {run_id} | {model} | {len(everything)} traces | {errors} errors")
         table("overall", {"all": everything})
