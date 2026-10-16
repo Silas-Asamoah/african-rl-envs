@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from typing import Literal
 
 import verifiers.v1 as vf
+from verifiers.v1.types import content_text
 
 from sika_agent import templates
 from sika_agent.checks import Expect, evaluate
@@ -58,7 +59,8 @@ class SikaTask(vf.Task[SikaTaskData, SikaState, SikaTaskConfig]):
         return trace.num_turns >= self.config.max_turns
 
     def verdict(self, trace: vf.Trace):
-        return evaluate(trace.state, self.data.expect, trace.last_reply)
+        said = "\n".join(content_text(m.content) for m in trace.assistant_messages)
+        return evaluate(trace.state, self.data.expect, said)
 
     @vf.reward
     async def outcome(self, trace: vf.Trace) -> float:

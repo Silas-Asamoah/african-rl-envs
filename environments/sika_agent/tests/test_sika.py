@@ -153,6 +153,15 @@ def test_parsing():
     assert amounts_in("You owe GH₵1,234.5 (about 1234.50 cedis), not 99") >= {123_450, 9_900}
 
 
+@pytest.mark.parametrize("family", ["loan_owed", "credit_cost"])
+def test_listing_numbers_until_one_matches_does_not_count(family):
+    scenario = generate(family, "en", 0)
+    answer = scenario.expect.reply_amount
+    padding = " ".join(cedis(answer + 100 * k) for k in range(-10, 11))
+    assert not evaluate(scenario.state, scenario.expect, padding).success
+    assert evaluate(scenario.state, scenario.expect, f"It's {cedis(answer)}.").success
+
+
 def test_insufficient_balance_moves_nothing():
     scenario = generate("insufficient_funds", "en", 0)
     s = scenario.state
