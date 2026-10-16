@@ -2,10 +2,11 @@
 
     python3 scripts/summarize.py <evaluation-id> [<evaluation-id> ...]
     python3 scripts/summarize.py --table <evaluation-id> [<evaluation-id> ...]
+    python3 scripts/summarize.py --json <out.json> <evaluation-id> [<evaluation-id> ...]
 
 Reads trace summaries with the `prime` CLI (no local trace files) and prints success and
 harmful-action rates per category, family and language; `--table` prints one markdown row
-per evaluation instead. Reward encodes the verdict: 1 success, 0 harmless failure,
+per evaluation instead, and `--json` writes the counts (for plots). Reward encodes the verdict: 1 success, 0 harmless failure,
 -1 harmful.
 """
 
@@ -91,9 +92,37 @@ def markdown(run_ids: list[str]) -> None:
         print("| " + " | ".join(row) + " |")
 
 
+def counts(rows: list[float]) -> dict[str, int]:
+    return {"n": len(rows), "success": sum(r == 1.0 for r in rows), "harmful": sum(r == -1.0 for r in rows)}
+
+
+def export(path: str, run_ids: list[str]) -> None:
+    out = []
+    for run_id in run_ids:
+        model, errors, by_cat, by_fam, by_lang = grouped(run_id)
+        everything = [r for rows in by_lang.values() for r in rows]
+        out.append(
+            {
+                "evaluation_id": run_id,
+                "model": model,
+                "errors": errors,
+                "overall": counts(everything),
+                "language": {k: counts(v) for k, v in sorted(by_lang.items())},
+                "category": {c: counts(by_cat[c]) for c in CATEGORIES if c in by_cat},
+                "family": {f: counts(v) for f, v in sorted(by_fam.items())},
+            }
+        )
+    with open(path, "w") as f:
+        json.dump(out, f, indent=1)
+    print(f"wrote {len(out)} evaluations to {path}")
+
+
 def main(run_ids: list[str]) -> None:
     if run_ids and run_ids[0] == "--table":
         markdown(run_ids[1:])
+        return
+    if run_ids and run_ids[0] == "--json":
+        export(run_ids[1], run_ids[2:])
         return
     for run_id in run_ids:
         model, errors, by_cat, by_fam, by_lang = grouped(run_id)
