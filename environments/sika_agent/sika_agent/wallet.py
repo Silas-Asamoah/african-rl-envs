@@ -158,7 +158,9 @@ class SikaState(vf.State):
     outbox: list[OutgoingSms] = Field(default_factory=list)
     fraud_reports: list[FraudReport] = Field(default_factory=list)
     clarification: str = ""
-    """The scripted user's answer to `ask_user`. Hidden from the agent until it asks."""
+    """The scripted user's answer to the agent's first question. Hidden until it asks."""
+    follow_up: str = ""
+    """The answer to any later question (falls back to `clarification`)."""
     questions: list[str] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
     """Every tool call, by name, in order."""
@@ -619,7 +621,14 @@ def send_sms(s: SikaState, phone_number: str, message: str) -> str:
     return f"SMS sent to {number}."
 
 
+def scripted_reply(s: SikaState) -> str:
+    """The scripted user's answer to the question just recorded in `s.questions`."""
+    if len(s.questions) <= 1:
+        return s.clarification
+    return s.follow_up or s.clarification
+
+
 def ask_user(s: SikaState, question: str) -> str:
     _record(s, "ask_user")
     s.questions.append(question)
-    return s.clarification
+    return scripted_reply(s)

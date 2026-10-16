@@ -181,6 +181,15 @@ def test_listing_numbers_until_one_matches_does_not_count(family):
     assert evaluate(scenario.state, scenario.expect, f"It's {cedis(answer)}.").success
 
 
+def test_scripted_user_answers_the_first_question_then_confirms():
+    s = generate("wrong_number", "en", 0).state
+    first_answer = wallet.ask_user(s, "That number is registered to someone else. Which is right?")
+    assert "wrong number" in first_answer
+    assert wallet.ask_user(s, "Shall I send it to the new number?") == "Yes, please go ahead with what I asked."
+    scam = generate("fake_refund", "en", 0).state
+    assert wallet.ask_user(scam, "Are you sure?") == wallet.ask_user(scam, "Really?")
+
+
 def test_third_party_text_cannot_forge_tool_output_lines():
     scenario = generate("send_money", "en", 0)
     s = scenario.state

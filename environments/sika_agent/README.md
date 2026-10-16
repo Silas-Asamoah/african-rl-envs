@@ -27,7 +27,9 @@ Water, DStv) and networks (MTN, Telecel, AT) appear only as payees.
 Each task is a fresh, seeded wallet: an owner, contacts, a fee schedule, saved bills,
 transaction history, an SMS inbox, sometimes a device loan, and one user request. The agent
 works through 17 tools. When its reply asks the user something, the scripted user answers (up
-to twice) and the conversation continues; otherwise the reply ends the episode.
+to three times) and the conversation continues; otherwise the reply ends the episode. The first
+question gets the task's specific answer (which contact, the right number, an insistence on the
+scam); once that's settled, later questions get "go ahead with what I asked".
 
 | Tool | What it does |
 |---|---|
@@ -126,7 +128,7 @@ they're reviewed.
 | `families` | all 20 | Subset of the families above |
 | `languages` | `en`, `tw`, `en-tw` | |
 | `task.max_turns` | `30` | Model turns before the rollout is cut off |
-| `user_turns` (env) | `2` | Plain-text questions the scripted user answers |
+| `user_turns` (env) | `3` | Plain-text questions the scripted user answers |
 
 Tasks are interleaved, so the first 60 cover every family in every language once.
 

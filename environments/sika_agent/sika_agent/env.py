@@ -8,12 +8,12 @@ The question counts as checking with the user.
 
 import verifiers.v1 as vf
 
-from sika_agent.wallet import SikaState
+from sika_agent.wallet import SikaState, scripted_reply
 
 
 class SikaEnvConfig(vf.EnvConfig):
     agent: vf.AgentConfig = vf.AgentConfig()
-    user_turns: int = 2
+    user_turns: int = 3
     """How many plain-text questions the scripted user answers before the episode ends."""
 
 
@@ -27,4 +27,4 @@ class SikaEnv(vf.Env[SikaEnvConfig]):
                 state: SikaState = chat.trace.state
                 state.events.append("ask_user")
                 state.questions.append(segment.last_reply)
-                segment = await chat.turn(state.clarification)
+                segment = await chat.turn(scripted_reply(state))

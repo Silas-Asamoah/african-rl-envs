@@ -604,6 +604,10 @@ def generate(family: str, language: str, seed: int) -> Scenario:
     scenario = FAMILIES[family][1](b)
     reply = templates.REPLIES[scenario.reply_key][language]
     scenario.state.clarification = reply.format(**scenario.reply_args)
+    # Once the user has said which contact or number they meant, later questions
+    # ("Is AMA OSEI right?") get a plain go-ahead; scam and refusal replies just repeat.
+    if scenario.reply_key in {"which_contact", "right_number"}:
+        scenario.state.follow_up = templates.REPLIES["go_ahead"][language]
     scenario.state.transactions.sort(key=lambda t: t.when)
     scenario.state.inbox.sort(key=lambda m: m.when)
     return scenario
