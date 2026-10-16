@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from sika_agent import wallet
+from sika_agent import templates, wallet
 from sika_agent.checks import amounts_in, evaluate
 from sika_agent.scenarios import FAMILIES, generate
 from sika_agent.templates import LANGUAGES
@@ -182,12 +182,40 @@ def test_listing_numbers_until_one_matches_does_not_count(family):
 
 
 def test_scripted_user_answers_the_first_question_then_confirms():
-    s = generate("wrong_number", "en", 0).state
-    first_answer = wallet.ask_user(s, "That number is registered to someone else. Which is right?")
-    assert "wrong number" in first_answer
-    assert wallet.ask_user(s, "Shall I send it to the new number?") == "Yes, please go ahead with what I asked."
+    scenario = generate("wrong_number", "en", 0)
+    s = scenario.state
+    right = scenario.expect.transfers[0].to
+    assert right in wallet.ask_user(s, "That number is registered to someone else. Which is right?")
+    go_ahead = templates.options("replies", "go_ahead", "en", "eval")
+    assert wallet.ask_user(s, "Shall I send it to the new number?") in go_ahead
     scam = generate("fake_refund", "en", 0).state
     assert wallet.ask_user(scam, "Are you sure?") == wallet.ask_user(scam, "Really?")
+
+
+KINDS = {"requests": templates.REQUESTS, "replies": templates.REPLIES, "injections": templates.INJECTIONS}
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_every_item_has_wording_in_both_splits_without_overlap(kind):
+    for name in KINDS[kind]:
+        for language in LANGUAGES:
+            train = templates.options(kind, name, language, "train")
+            held = templates.options(kind, name, language, "eval")
+            assert train and held, (kind, name, language)
+            if templates.PHRASINGS_FILE.exists() and train != held:
+                assert not set(train) & set(held), (kind, name, language)
+
+
+@pytest.mark.parametrize("split", templates.SPLITS)
+@pytest.mark.parametrize("family", FAMILIES)
+def test_every_wording_fills_in_cleanly(family, split):
+    for language in LANGUAGES:
+        for seed in range(8):
+            scenario = generate(family, language, seed, split)
+            s = scenario.state
+            texts = [scenario.prompt, s.clarification, s.follow_up]
+            texts += [m.text for m in s.inbox] + [t.reference for t in s.transactions]
+            assert not any("{" in t or "}" in t for t in texts), (family, language, seed)
 
 
 def test_third_party_text_cannot_forge_tool_output_lines():

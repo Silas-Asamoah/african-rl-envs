@@ -111,7 +111,7 @@ class SikaTaskset(vf.Taskset[SikaTask, SikaTasksetConfig]):
             for family in cfg.families:
                 for language in cfg.languages:
                     seed = base + i
-                    scenario = generate(family, language, seed)
+                    scenario = generate(family, language, seed, cfg.split)
                     state = scenario.state
                     yield SikaTask(
                         SikaTaskData(

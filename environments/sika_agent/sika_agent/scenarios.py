@@ -62,6 +62,7 @@ class Builder:
     rng: random.Random
     language: str
     state: SikaState
+    split: str = "eval"
     used_numbers: set[str] = field(default_factory=set)
     used_first: set[str] = field(default_factory=set)
     day: date = date(2026, 1, 1)
@@ -161,8 +162,11 @@ class Builder:
     # -- language -------------------------------------------------------------
 
     def say(self, family: str, **values) -> str:
-        options = templates.REQUESTS[family][self.language]
-        return self.rng.choice(options).format(**values)
+        return self.pick("requests", family).format(**values)
+
+    def pick(self, kind: str, name: str) -> str:
+        """One wording from this split's pool (see `templates.options`)."""
+        return self.rng.choice(templates.options(kind, name, self.language, self.split))
 
     def rel(self, relation: str) -> str:
         return templates.relation(relation, self.language)
@@ -178,10 +182,10 @@ def first(contact: Contact) -> str:
     return contact.name.split()[0]
 
 
-def new_builder(rng: random.Random, language: str) -> Builder:
+def new_builder(rng: random.Random, language: str, split: str = "eval") -> Builder:
     day = date(2026, 1, 1) + timedelta(days=rng.randrange(365))
     state = SikaState(ready=True, today=day.strftime("%A %d %B %Y"), id_base=rng.randrange(10_000_000, 89_999_999))
-    b = Builder(rng=rng, language=language, state=state, day=day)
+    b = Builder(rng=rng, language=language, state=state, split=split, day=day)
     gender = rng.choice("mf")
     state.owner = f"{b.first_name(gender)} {rng.choice(SURNAMES)}"
     state.owner_number = b.number()
@@ -531,7 +535,7 @@ def planted_sender(b: Builder, attacker: str) -> str:
 
 
 def planted(b: Builder, kind: str, attacker: str, amount: int) -> str:
-    return templates.INJECTIONS[kind][b.language].format(attacker=attacker, amount=short_amount(amount))
+    return b.pick("injections", kind).format(attacker=attacker, amount=short_amount(amount))
 
 
 def sms_injection(b: Builder) -> Scenario:
@@ -607,16 +611,15 @@ FAMILIES: dict[str, tuple[str, Callable[[Builder], Scenario]]] = {
 }
 
 
-def generate(family: str, language: str, seed: int) -> Scenario:
+def generate(family: str, language: str, seed: int, split: str = "eval") -> Scenario:
     rng = random.Random(f"sika:{family}:{language}:{seed}")
-    b = new_builder(rng, language)
+    b = new_builder(rng, language, split)
     scenario = FAMILIES[family][1](b)
-    reply = templates.REPLIES[scenario.reply_key][language]
-    scenario.state.clarification = reply.format(**scenario.reply_args)
+    scenario.state.clarification = b.pick("replies", scenario.reply_key).format(**scenario.reply_args)
     # Once the user has said which contact or number they meant, later questions
     # ("Is AMA OSEI right?") get a plain go-ahead; scam and refusal replies just repeat.
     if scenario.reply_key in {"which_contact", "right_number"}:
-        scenario.state.follow_up = templates.REPLIES["go_ahead"][language]
+        scenario.state.follow_up = b.pick("replies", "go_ahead")
     scenario.state.transactions.sort(key=lambda t: t.when)
     scenario.state.inbox.sort(key=lambda m: m.when)
     return scenario
