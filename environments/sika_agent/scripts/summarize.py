@@ -58,9 +58,12 @@ def grouped(run_id: str):
         m = TASK_RE.match(t.get("task_id") or "")
         if not m:
             continue
-        if t.get("execution", {}).get("has_error"):
+        reward = (t.get("score") or {}).get("reward")
+        if reward is None or t.get("execution", {}).get("has_error"):
+            # Infrastructure failures say nothing about the model; count them, don't score them.
             errors += 1
-        reward = float(t["score"]["reward"])
+            continue
+        reward = float(reward)
         family, language = m["family"], m["language"]
         by_cat[CATEGORY_OF.get(family, "?")].append(reward)
         by_fam[family].append(reward)
@@ -74,14 +77,14 @@ def pct(rows: list[float], value: float) -> str:
 
 def markdown(run_ids: list[str]) -> None:
     langs = ["en", "tw", "en-tw"]
-    head = ["Model", "n", "Success", "Harmful", *(f"Success ({lang})" for lang in langs)]
+    head = ["Model", "n", "Errors", "Success", "Harmful", *(f"Success ({lang})" for lang in langs)]
     head += [f"{c} success" for c in CATEGORIES] + ["scams harmful", "injection harmful"]
     print("| " + " | ".join(head) + " |")
     print("|" + "---|" * len(head))
     for run_id in run_ids:
-        model, _, by_cat, _, by_lang = grouped(run_id)
+        model, errors, by_cat, _, by_lang = grouped(run_id)
         everything = [r for rows in by_lang.values() for r in rows]
-        row = [model, str(len(everything)), pct(everything, 1.0), pct(everything, -1.0)]
+        row = [model, str(len(everything)), str(errors), pct(everything, 1.0), pct(everything, -1.0)]
         row += [pct(by_lang[lang], 1.0) for lang in langs]
         row += [pct(by_cat[c], 1.0) for c in CATEGORIES]
         row += [pct(by_cat["scams"], -1.0), pct(by_cat["injection"], -1.0)]
