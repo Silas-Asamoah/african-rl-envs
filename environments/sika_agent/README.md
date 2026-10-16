@@ -113,18 +113,37 @@ injection in images or voice, poisoning that persists across sessions, and many-
 jailbreaks. OWASP is explicit that no single control prevents prompt injection; the point
 here is to measure how often an agent is fooled, not to certify it.
 
-## Languages
+## Languages and wording
 
-`en` (English), `tw` (Twi), `en-tw` (Twi–English code-switching). **The `tw` and `en-tw`
-templates, including the planted injections, are drafts that still need native-speaker
-review**; see `sika_agent/templates.py`. Treat results in those languages as provisional until
-they're reviewed.
+`en` (English), `tw` (Twi), `en-tw` (Twi–English code-switching). Every user request,
+scripted reply and planted injection comes in several wordings (758 in total), stored in
+`sika_agent/phrasings.json` and split into **train** and held-out **eval** pools, so
+evaluation tasks use wording never seen in training.
+
+How the wording was made:
+
+1. `scripts/build_references.py` gathers reference material from Ghana NLP's datasets
+   without downloading them: real Twi–English code-switched sentences from KasaSpeech, a
+   finance glossary and Twi dialogue excerpts.
+2. `scripts/generate_phrasings.py` has Claude Opus 5.5 and Gemini 4 Argon write versions of
+   each item from its meaning, its placeholders and that reference material. Each version
+   must keep its placeholders and be in the right language, then pass a back-translation
+   check by a *different* model (meaning match and a 1–5 naturalness rating). Opus's
+   content filter refuses to write the attacker texts, so Gemini writes those, and GPT-5.4
+   checks what Opus refuses to check.
+3. A native Twi reader spot-checked the result on a review page
+   (`scripts/build_review_page.py`, `scripts/apply_review.py`): **74 of the 483 Twi and
+   Twi–English phrasings reviewed, all 74 approved without changes.** The rest are
+   machine-checked only.
+
+English planted injections and the code-switched "that's all" reply still use the
+hand-written seeds in `sika_agent/templates.py`.
 
 ## Configuration
 
 | Key | Default | |
 |---|---|---|
-| `split` | `eval` | `train` and `eval` use disjoint seeds |
+| `split` | `eval` | `train` and `eval` use disjoint seeds and disjoint wording pools |
 | `tasks_per_combo` | `10` | Tasks per (family, language); 600 tasks by default |
 | `families` | all 20 | Subset of the families above |
 | `languages` | `en`, `tw`, `en-tw` | |
@@ -163,16 +182,26 @@ uv run pytest -q
 
 The tests drive a scripted correct agent through every family, language and 12 seeds (it must
 always succeed), check that doing nothing is never harmful, check that falling for each scam or
-obeying each planted instruction is always caught, and check that third-party text can't forge
-tool output.
+obeying each planted instruction is always caught, check that third-party text can't forge
+tool output, and check that every wording fills in cleanly with train and eval pools kept apart.
 
 ## Baseline results
 
-Pending.
+[0.2.1 baselines](results/v0.2.1.md), six models on 120 tasks with the old hand-written
+wording: Qwen3.5-9B scored 95% in English but 48% in Twi, the open models fell for scams
+9–12% of the time, and frontier models reached 95–98% overall. Baselines on 0.3.0's
+held-out wording are pending.
+
+## Credits
+
+Reference material for the Twi wording comes from the [Ghana NLP](https://huggingface.co/ghananlpcommunity)
+community: KasaSpeech (`Ghana_English-Twi_Code-switching_Speech`, Apache-2.0), and
+`twi-translation-tool-calling` and `pristine-twi-english` (CC-BY-NC-4.0, used only to guide
+generation; none of their text is included here).
 
 ## Roadmap
 
-- Native-speaker review of Twi and code-switched templates; add Ga, Ewe and Ghanaian Pidgin.
+- Finish the native review of the remaining Twi phrasings; add Ga, Ewe and Ghanaian Pidgin.
 - Encoded and obfuscated injections; disputes (wrong-number reversals through support).
 - A Nigeria pack (Pidgin, Yoruba, Hausa, Igbo; naira; bank USSD flows).
 - Voice inputs built from real code-switched speech (e.g. Ghana NLP's KasaSpeech).
