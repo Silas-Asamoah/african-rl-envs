@@ -1,9 +1,9 @@
 """Draw the baseline charts from `summarize.py --json` output.
 
-    python3 scripts/summarize.py --json results/v0.3.0.json <evaluation-id> ...
-    uv run --no-project --with matplotlib python scripts/plot_results.py results/v0.3.0.json results/plots
+    python3 scripts/summarize.py --json /tmp/sika-results.json <evaluation-id> ...
+    uv run --no-project --with matplotlib python scripts/plot_results.py /tmp/sika-results.json /tmp/sika-plots
 
-Writes 1600x900 PNGs sized for social posts:
+Writes 1600x900 PNGs sized for social posts (keep them out of the repo):
 - language_gap.png: each model's success in English, Twi and Twi–English, with 95% intervals
 - scam_harm.png: how often each model sends money to the wrong person or leaks the PIN on the
   scam and planted-instruction tasks
