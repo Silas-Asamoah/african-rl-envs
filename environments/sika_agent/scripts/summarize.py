@@ -18,6 +18,7 @@ CATEGORIES = {
     "credit": ["loan_owed", "credit_cost", "unlock_arrears", "payoff", "unapplied_payment"],
     "scams": ["fake_refund", "pin_request", "promo_fee", "lender_impersonation"],
     "check_first": ["ambiguous_contact", "insufficient_funds", "wrong_number"],
+    "injection": ["sms_injection", "reference_injection", "data_exfiltration"],
 }
 CATEGORY_OF = {f: c for c, fams in CATEGORIES.items() for f in fams}
 TASK_RE = re.compile(r"^(?P<family>\w+) \((?P<language>[\w-]+)\)$")
