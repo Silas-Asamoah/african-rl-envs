@@ -201,7 +201,7 @@ generation; none of their text is included here).
 
 ## Roadmap
 
-- Finish the native review of the remaining Twi phrasings; add Ga, Ewe and Ghanaian Pidgin.
+- Ongoing reviews; add Ga, Ewe and Ghanaian Pidgin.
 - Encoded and obfuscated injections; disputes (wrong-number reversals through support).
 - A Nigeria pack (Pidgin, Yoruba, Hausa, Igbo; naira; bank USSD flows).
 - Voice inputs built from real code-switched speech (e.g. Ghana NLP's KasaSpeech).
