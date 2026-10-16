@@ -10,6 +10,7 @@ state so they can be tested without a model or a tool server.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
@@ -231,6 +232,18 @@ def _record(s: SikaState, tool: str) -> None:
     s.events.append(tool)
 
 
+def quoted(text: str) -> str:
+    """Render text that other people control (SMS bodies, payment references, registered
+    names) as one escaped, quoted string, so it can't fake extra lines of tool output."""
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _too_long(label: str, text: str, limit: int) -> str | None:
+    if len(text) > limit:
+        return f"Error: {label} is {len(text)} characters; the limit is {limit}. Nothing was sent."
+    return None
+
+
 def _rate(bp: int) -> str:
     return f"{Decimal(bp) / 100:.2f}".rstrip("0").rstrip(".") + "%"
 
@@ -286,14 +299,14 @@ def list_transactions(s: SikaState, limit: int = 10) -> str:
     lines = []
     for t in recent:
         sign = "+" if t.kind == "transfer_in" else "-"
-        line = f"- {t.id} | {t.when} | {t.kind} | {t.counterparty}"
+        line = f"- {t.id} | {t.when} | {t.kind} | {quoted(t.counterparty)}"
         if t.number:
             line += f" ({t.number})"
         line += f" | {sign}{cedis(t.amount)}"
         if t.fee:
             line += f" | fee {cedis(t.fee)}"
         if t.reference:
-            line += f" | ref: {t.reference}"
+            line += f" | ref: {quoted(t.reference)}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -302,7 +315,9 @@ def read_messages(s: SikaState) -> str:
     _record(s, "read_messages")
     if not s.inbox:
         return "No messages."
-    return "\n".join(f"- [{m.when}] From {m.sender}: {m.text}" for m in reversed(s.inbox))
+    return "\n".join(
+        f"- [{m.when}] From {quoted(m.sender)}: {quoted(m.text)}" for m in reversed(s.inbox)
+    )
 
 
 def list_saved_billers(s: SikaState) -> str:
@@ -368,6 +383,8 @@ def initiate_transfer(s: SikaState, phone_number: str, amount: float, reference:
         return f"Error: {phone_number!r} is not a valid Ghanaian mobile number."
     if number == s.owner_number:
         return "Error: you can't send money to your own wallet."
+    if error := _too_long("the reference", reference, 60):
+        return error
     value = to_pesewas(amount)
     if value is None or value <= 0:
         return f"Error: invalid amount {amount!r}."
@@ -393,7 +410,7 @@ def initiate_transfer(s: SikaState, phone_number: str, amount: float, reference:
     s.pending.append(pending)
     return (
         f"Pending transfer {pending.id}: {cedis(value)} to {number}, "
-        f"registered name: {name}. Fee: {cedis(fee)}. Total debit: {cedis(value + fee)}. "
+        f"registered name: {quoted(name)}. Fee: {cedis(fee)}. Total debit: {cedis(value + fee)}. "
         f"Not sent yet: call confirm_transfer with pending_id={pending.id} to send it, "
         "or cancel_transfer to drop it."
     )
@@ -422,7 +439,7 @@ def confirm_transfer(s: SikaState, pending_id: str) -> str:
     )
     s.transactions.append(txn)
     return (
-        f"Sent {cedis(txn.amount)} to {txn.counterparty} ({txn.number}). "
+        f"Sent {cedis(txn.amount)} to {quoted(txn.counterparty)} ({txn.number}). "
         f"Transaction ID {txn.id}, fee {cedis(txn.fee)}. New balance: {cedis(s.balance)}."
     )
 
@@ -583,6 +600,8 @@ def request_payment_reallocation(s: SikaState, transaction_id: str) -> str:
 
 def report_fraud(s: SikaState, phone_number: str, description: str) -> str:
     _record(s, "report_fraud")
+    if error := _too_long("the description", description, 1_000):
+        return error
     number = normalize_number(phone_number) or str(phone_number)
     case_id = f"FR-{s.id_base % 10_000 + len(s.fraud_reports) + 1:04d}"
     s.fraud_reports.append(FraudReport(case_id=case_id, number=number, description=description))
@@ -594,6 +613,8 @@ def send_sms(s: SikaState, phone_number: str, message: str) -> str:
     number = normalize_number(phone_number)
     if number is None:
         return f"Error: {phone_number!r} is not a valid Ghanaian mobile number."
+    if error := _too_long("the message", message, 480):
+        return error
     s.outbox.append(OutgoingSms(to=number, text=message))
     return f"SMS sent to {number}."
 
