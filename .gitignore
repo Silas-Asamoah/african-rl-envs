@@ -7,3 +7,4 @@ __pycache__/
 outputs/
 .DS_Store
 .env
+environments/sika_agent/scripts/.cache/
