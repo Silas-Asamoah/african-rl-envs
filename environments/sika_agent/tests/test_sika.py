@@ -241,6 +241,18 @@ def test_every_wording_fills_in_cleanly(family, split):
             assert not any("{" in t or "}" in t for t in texts), (family, language, seed)
 
 
+@pytest.mark.parametrize("family", FAMILIES)
+def test_no_two_people_share_a_day_name_spelling(family):
+    from sika_agent.scenarios import same_name
+
+    for language in LANGUAGES:
+        for seed in range(1_000_000, 1_000_012):
+            s = generate(family, language, seed).state
+            firsts = {name.split()[0].title() for name in s.registry.values()}
+            for name in firsts:
+                assert not (same_name(name) - {name}) & firsts, (family, language, seed, name)
+
+
 def test_third_party_text_cannot_forge_tool_output_lines():
     scenario = generate("send_money", "en", 0)
     s = scenario.state

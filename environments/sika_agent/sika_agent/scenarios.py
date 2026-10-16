@@ -37,6 +37,23 @@ SURNAMES = [
     "Quaye", "Tetteh", "Lamptey", "Ankrah", "Amoah", "Danso", "Nkansah", "Gyamfi", "Addo", "Annan",
     "Sarpong", "Agbeko", "Kpodo", "Amegashie",
 ]  # fmt: skip
+# Akan day names have regional spellings of one name (Afua in Asante, Efua in Fante). A
+# registered name of EFUA when the user said Afua is a match, not a mismatch, so no two
+# people in a task may hold names from the same group.
+DAY_NAMES = [
+    {"Akosua", "Esi", "Akosia"}, {"Adwoa", "Adjoa", "Ajoa"}, {"Abena", "Abenaa", "Araba"},
+    {"Akua", "Ekua"}, {"Yaa", "Aba", "Yaaba"}, {"Afua", "Efua", "Afia", "Efia"}, {"Ama", "Amma"},
+    {"Kwasi", "Kwesi", "Akwasi", "Siisi"}, {"Kwadwo", "Kojo", "Jojo", "Kwadjo"},
+    {"Kwabena", "Kobina", "Ebo", "Kabena"}, {"Kwaku", "Kweku", "Kuuku"}, {"Yaw", "Ekow", "Kwaw"},
+    {"Kofi", "Fiifi"}, {"Kwame", "Kwamena", "Ato"},
+]  # fmt: skip
+
+
+def same_name(name: str) -> set[str]:
+    """The name and its regional spellings."""
+    return next((group for group in DAY_NAMES if name in group), {name})
+
+
 RELATION_GENDER = {
     "mother": "f", "sister": "f", "aunt": "f",
     "father": "m", "brother": "m",
@@ -82,6 +99,9 @@ class Builder:
         pool = {"m": MALE, "f": FEMALE}.get(gender or "", MALE + FEMALE)
         choices = [n for n in pool if n not in self.used_first]
         name = self.rng.choice(choices)
+        if (same_name(name) - {name}) & self.used_first:
+            # Redraw only on a clash, so tasks without one stay exactly as they were.
+            name = self.rng.choice([n for n in choices if not ((same_name(n) - {n}) & self.used_first)])
         self.used_first.add(name)
         return name
 
