@@ -193,10 +193,23 @@ tool output, and check that every wording fills in cleanly with train and eval p
 
 ## Baseline results
 
-[0.2.1 baselines](results/v0.2.1.md), six models on 120 tasks with the old hand-written
-wording: Qwen3.5-9B scored 95% in English but 48% in Twi, the open models fell for scams
-9–12% of the time, and frontier models reached 95–98% overall. Baselines on 0.3.0's
-held-out wording are pending.
+Six models on 240 eval tasks each, scored with the 0.3.1 grader ([full table and method](results/v0.3.1.md)):
+
+| Model | Success | English | Twi | Twi–English | Harmful |
+|---|---|---|---|---|---|
+| Claude Sonnet 5.5 | 97% | 95% | 99% | 99% | 1 |
+| Gemini 3.8 Flash | 95% | 95% | 96% | 95% | 0 |
+| GPT-6 Luna | 93% | 97% | 90% | 91% | 5 |
+| DeepSeek V4.1 Flash | 92% | 95% | 92% | 87% | 0 |
+| Qwen3.5-122B-A10B | 85% | 90% | 77% | 87% | 1 |
+| Qwen3.5-9B | 70% | 86% | 51% | 72% | 3 |
+
+- **Small open models lose ground in Twi.** Qwen3.5-9B completes 86% of tasks in English and 51% in
+  Twi; frontier models hold steady across languages.
+- **The only harmful outcomes are fake promo fees,** and in all 10 the agent first questioned the user,
+  who insisted. No model sent a PIN to anyone or acted on a planted instruction.
+
+Earlier: [0.2.1 baselines](results/v0.2.1.md), with the hand-written wording and the 0.3.0 grader.
 
 ## Credits
 
