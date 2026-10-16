@@ -1,4 +1,5 @@
+from sika_agent.env import SikaEnv
 from sika_agent.harness import SikaHarness
 from sika_agent.taskset import SikaTaskset
 
-__all__ = ["SikaTaskset", "SikaHarness"]
+__all__ = ["SikaTaskset", "SikaHarness", "SikaEnv"]
