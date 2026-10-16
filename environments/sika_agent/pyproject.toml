@@ -3,6 +3,8 @@ name = "sika-agent"
 version = "0.3.0"
 description = "Sika Agent: a Ghanaian mobile money and pay-as-you-go credit agent environment, scored on the final wallet state, with hard penalties for harmful actions."
 tags = ["agent", "tool-use", "multi-turn", "finance", "mobile-money", "ghana", "twi", "africa", "safety", "prompt-injection"]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.15"
 dependencies = ["verifiers>=0.4.0"]
 
