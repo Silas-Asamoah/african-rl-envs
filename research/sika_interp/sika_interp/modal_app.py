@@ -30,6 +30,16 @@ image = (
         "scikit-learn",
     )
     .env({"HF_HOME": "/cache/hf"})
+    # The environment itself, for the word tagger (wording pools, names, system prompt).
+    .add_local_dir(
+        # Repo path when building locally; inside the container this file sits at /root and
+        # the image is already built, so the walk just stops at "/".
+        Path(__file__).resolve().parent.parent.parent.parent / "environments" / "sika_agent",
+        "/opt/sika_agent",
+        copy=True,
+        ignore=[".venv", "dist", "outputs", "**/__pycache__", "scripts/.cache"],
+    )
+    .run_commands("pip install /opt/sika_agent")
     .add_local_python_source("sika_interp")
 )
 app = modal.App("sika-interp", image=image)
@@ -209,9 +219,164 @@ class Model:
         cache.commit()
         return rows
 
+    def user_span(self, ids: list[int], text: str) -> tuple[int, list[str]] | None:
+        """Where the user's message sits in the prompt: its first token, and what each prefix
+        of its tokens decodes to (for `switching.align`). None if it can't be found."""
+        start = len(ids) - 1
+        while start > 0 and text not in self.tok.decode(ids[start:]):
+            start -= 1
+        if text not in self.tok.decode(ids[start:]):
+            return None
+        prefixes, end = [], start
+        while end < len(ids):
+            end += 1
+            prefixes.append(self.tok.decode(ids[start:end]))
+            if text in prefixes[-1]:
+                return start, prefixes
+        return None
+
+    @modal.method()
+    def token_states(self, run: str, batch: int, episodes: list[dict]) -> list[dict]:
+        """For each episode's request, the residual stream at every TOKEN_LAYER_STEP-th layer
+        for each token of the user's message, with its word's tag and whether it opens a
+        switch; saved to the volume under tokens/<run>/<model>/. MLP neuron sums at switch
+        and other word tokens, and at English and Twi words, of Twi–English requests are
+        saved per batch for analyse_tokens."""
+        import numpy as np
+        import torch
+
+        from sika_interp.switching import token_tags
+
+        keep = list(range(TOKEN_LAYER_STEP, len(self.layers) + 1, TOKEN_LAYER_STEP))
+        width = self.layers[0].mlp.down_proj.in_features
+        sums = {
+            f"{g}_{k}": np.zeros((len(self.layers), width)) for g in ("switch", "other", "en", "tw") for k in ("sum", "sq")
+        } | {f"{g}_n": np.zeros(1) for g in ("switch", "other", "en", "tw")}
+        base = Path("/cache/tokens") / run / self.model_id.split("/")[-1]
+        base.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for ep in episodes:
+            ids = self.render(ep["messages"], ep["tools"])[0].tolist()
+            text = ep["messages"][-1]["content"]
+            span = self.user_span(ids, text)
+            row = {"task_id": ep["task_id"], "language": ep["language"], "found": span is not None}
+            if span is None:
+                rows.append(row)
+                continue
+            start, prefixes = span
+            tags, opens = token_tags(text, prefixes)
+            positions = list(range(start, start + len(prefixes)))
+            captured: dict[int, torch.Tensor] = {}
+
+            def grab(i):
+                def hook(module, args):
+                    captured[i] = args[0][0, positions].float().cpu()
+
+                return hook
+
+            handles = [layer.mlp.down_proj.register_forward_pre_hook(grab(i)) for i, layer in enumerate(self.layers)]
+            with torch.no_grad():
+                out = self.model(input_ids=torch.tensor([ids], device="cuda"), output_hidden_states=True)
+            for h in handles:
+                h.remove()
+            residual = torch.stack([out.hidden_states[k][0, positions].float().cpu() for k in keep], dim=1)
+            np.savez(
+                base / (ep["task_id"].replace("/", "_") + ".npz"),
+                residual=residual.numpy().astype(np.float16),
+                tags=np.array(tags),
+                opens=np.array(opens),
+                layers=np.array(keep),
+            )
+            if ep["language"] == "en-tw":
+                mlp = torch.stack([captured[i] for i in range(len(self.layers))], dim=1).numpy()  # [tokens, layers, width]
+                tags_a, opens_a = np.array(tags), np.array(opens)
+                is_word = np.isin(tags_a, ["en", "tw", "mixed"])
+                for group, mask in (
+                    ("switch", opens_a & is_word),
+                    ("other", ~opens_a & is_word),
+                    ("en", tags_a == "en"),
+                    ("tw", tags_a == "tw"),
+                ):
+                    sel = mlp[mask].astype(np.float64)
+                    sums[f"{group}_sum"] += sel.sum(0)
+                    sums[f"{group}_sq"] += (sel**2).sum(0)
+                    sums[f"{group}_n"] += len(sel)
+            row.update(tokens=len(prefixes), switches=int(sum(opens)))
+            rows.append(row)
+        np.savez(base / f"mlp-{batch:03d}.npz", **sums)
+        cache.commit()
+        return rows
+
 
 THREATS = ("scams", "injection")
 """Categories where the right move is to refuse: the target of the threat probe."""
+
+
+TOKEN_LAYER_STEP = 4
+"""Token-level states are kept at every 4th layer: enough to see where things change."""
+
+
+@app.function(volumes={"/cache": cache}, cpu=8, memory=65536, timeout=7200)
+def analyse_tokens(run: str, model: str) -> dict:
+    """What the token-level states say about Twi–English, per kept layer:
+    - a probe trained to tell English from Twi requests' tokens, read on Twi–English tokens
+      by their word's language (are English islands read as English, or as Twi context?);
+    - how far the state jumps between consecutive tokens at switch points versus elsewhere;
+    - MLP neurons that fire differently at switch tokens, and on English versus Twi words
+      inside Twi–English requests (top 20 per layer, by standardised difference)."""
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+
+    base = Path("/cache/tokens") / run / model.split("/")[-1]
+    eps = []
+    for path in sorted(base.glob("eval_*.npz")):
+        with np.load(path) as z:
+            eps.append({k: z[k] for k in ("residual", "tags", "opens", "layers")} | {"language": path.stem.split("_")[-2]})
+    layers = eps[0]["layers"].tolist()
+    out: dict = {"layers": layers, "episodes": {lang: sum(e["language"] == lang for e in eps) for lang in ("en", "tw", "en-tw")}}
+    word = lambda e: np.isin(e["tags"], ["en", "tw", "mixed"])  # noqa: E731
+    mono = [e for e in eps if e["language"] in ("en", "tw")]
+    mixed = [e for e in eps if e["language"] == "en-tw"]
+    reading: dict = {}
+    jumps: dict = {"switch": [], "other": []}
+    for j in range(len(layers)):
+        X = np.concatenate([e["residual"][word(e), j] for e in mono]).astype(np.float32)
+        y = np.concatenate([np.full(word(e).sum(), e["language"] == "tw") for e in mono])
+        probe = LogisticRegression(C=0.1, max_iter=2000).fit((X - X.mean(0)) / (X.std(0) + 1e-6), y)
+        mu, sd = X.mean(0), X.std(0) + 1e-6
+        for side in ("en", "tw", "mixed"):
+            states = [e["residual"][e["tags"] == side, j] for e in mixed]
+            S = np.concatenate([s for s in states if len(s)]).astype(np.float32)
+            reading.setdefault(side, []).append(float(probe.predict_proba((S - mu) / sd)[:, 1].mean()))
+        sw, ot = [], []
+        for e in mixed:
+            R = e["residual"][:, j].astype(np.float32)
+            R = R / (np.linalg.norm(R, axis=1, keepdims=True) + 1e-6)
+            step = 1 - (R[1:] * R[:-1]).sum(1)
+            is_word = word(e)[1:]
+            sw += step[e["opens"][1:] & is_word].tolist()
+            ot += step[~e["opens"][1:] & is_word].tolist()
+        jumps["switch"].append(float(np.mean(sw)))
+        jumps["other"].append(float(np.mean(ot)))
+    out["reads_as_twi"] = reading
+    out["jump"] = jumps
+
+    sums = [np.load(p) for p in sorted(base.glob("mlp-*.npz"))]
+    total = {k: sum(s[k] for s in sums) for k in sums[0].files}
+
+    def top(a: str, b: str) -> list[list[list[float]]]:
+        ma, mb = total[f"{a}_sum"] / total[f"{a}_n"], total[f"{b}_sum"] / total[f"{b}_n"]
+        va = total[f"{a}_sq"] / total[f"{a}_n"] - ma**2
+        vb = total[f"{b}_sq"] / total[f"{b}_n"] - mb**2
+        z = (ma - mb) / np.sqrt((va + vb) / 2 + 1e-6)
+        return [[[int(i), round(float(z[layer, i]), 2)] for i in np.argsort(-np.abs(z[layer]))[:20]] for layer in range(z.shape[0])]
+
+    out["neurons"] = {
+        "switch_vs_other": top("switch", "other"),
+        "en_vs_tw_words": top("en", "tw"),
+        "counts": {k.removesuffix("_n"): int(np.asarray(v).ravel()[0]) for k, v in total.items() if k.endswith("_n")},
+    }
+    return out
 
 
 POINTS = ("request_end", "reasoning_end", "action_start")
@@ -400,6 +565,30 @@ def read(traces: str, run: str, batch: int = 100):
             f" | action found: {sum(r['action_start'] is not None for r in mine)}"
         )
     print(f"details in {out}")
+
+
+@app.local_entrypoint()
+def tokens(traces: str, run: str, batch: int = 100):
+    """Token-level states for the user's message in every episode of `traces`
+    (comma-separated), then `analyse_tokens`; prints the Twi–English summary and saves it."""
+    jobs = []
+    for model, eps in first_turns(traces.split(",")).items():
+        for i in range(0, len(eps), batch):
+            jobs.append((model, Model(model_id=model).token_states.spawn(run, i // batch, eps[i : i + batch])))
+    rows: dict[str, list[dict]] = {}
+    for model, job in jobs:
+        rows.setdefault(model, []).extend(job.get())
+    for model, mine in rows.items():
+        print(f"{model}: {sum(r['found'] for r in mine)}/{len(mine)} messages located")
+        res = analyse_tokens.remote(run, model)
+        out = Path(f"tokens-{run}-{model.split('/')[-1]}.json")
+        out.write_text(json.dumps(res))
+        print(f"  layers {res['layers']}  episodes {res['episodes']}")
+        for side, xs in res["reads_as_twi"].items():
+            print(f"  Twi–English {side:5} words read as Twi: " + " ".join(f"{x:.2f}" for x in xs))
+        print("  state jump at switch points: " + " ".join(f"{x:.3f}" for x in res["jump"]["switch"]))
+        print("  state jump elsewhere:        " + " ".join(f"{x:.3f}" for x in res["jump"]["other"]))
+        print(f"  saved {out}")
 
 
 @app.local_entrypoint()
