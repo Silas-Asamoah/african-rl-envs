@@ -6,6 +6,7 @@
 #   bash research/sika_interp/remote/pod.sh serve qwen && bash .../pod.sh wait qwen
 #   bash research/sika_interp/remote/pod.sh serve ministral && bash .../pod.sh wait ministral
 #   bash research/sika_interp/remote/pod.sh eval qwen [vf-eval options, e.g. -n 60]
+#   bash research/sika_interp/remote/pod.sh study qwen      # the study's 800 episodes
 #
 # Traces land in outputs/, server logs in logs/.
 set -euo pipefail
@@ -72,9 +73,26 @@ wait)
 eval)
   name=${2:?eval qwen|ministral}
   shift 2
+  logfile="$LOGS/eval-$name-$(date +%H%M%S)-$$.log"
   LOCAL_KEY=EMPTY "$VENVS/client/bin/vf-eval" sika-agent @ "$HERE/configs/$name.toml" \
-    --no-push --no-rich -o "$ROOT/outputs" "$@" > "$LOGS/eval-$name.log" 2>&1
-  log "eval $name done: $(ls -d "$ROOT"/outputs/*/ | tail -1)"
+    --no-push --no-rich -o "$ROOT/outputs" "$@" > "$logfile" 2>&1
+  log "eval $name done, log $logfile"
+  ;;
+study)
+  # The study's episodes (sika_interp.tasks), in the background: the matched twins, and the
+  # extra Twi–English seeds selected by task id.
+  name=${2:?study qwen|ministral [matched|extra]}
+  part=${3:-both}
+  if [ "$part" != extra ]; then
+    (setsid nohup bash "$0" eval "$name" --run.dir "study-matched-$name" < /dev/null > /dev/null 2>&1 &)
+  fi
+  if [ "$part" != matched ]; then
+    ids=$(cd "$HERE" && "$VENVS/client/bin/python" -c \
+      "import json; from sika_interp.tasks import extra_en_tw_tasks; print(json.dumps([t.data.id for t in extra_en_tw_tasks()]))")
+    (setsid nohup bash "$0" eval "$name" --env.taskset.tasks_per_combo 20 --select.include.ids "$ids" \
+      --run.dir "study-extra-entw-$name" < /dev/null > /dev/null 2>&1 &)
+  fi
+  log "study $name ($part) started"
   ;;
 *)
   sed -n '2,10p' "$0"; exit 2
