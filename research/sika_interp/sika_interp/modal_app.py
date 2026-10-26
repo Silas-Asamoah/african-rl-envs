@@ -27,6 +27,7 @@ image = (
         "mistral-common>=1.8.6",
         "huggingface_hub",
         "numpy",
+        "scikit-learn",
     )
     .env({"HF_HOME": "/cache/hf"})
     .add_local_python_source("sika_interp")
@@ -207,6 +208,77 @@ class Model:
             rows.append(row)
         cache.commit()
         return rows
+
+
+THREATS = ("scams", "injection")
+"""Categories where the right move is to refuse: the target of the threat probe."""
+
+
+POINTS = ("request_end", "reasoning_end", "action_start")
+"""The read points `read_points` stores, in order (probes.POINTS mirrors this)."""
+QUESTIONS = ("family", "threat", "language", "placement")
+"""What `analyse` asks of each read point: task type, scam-or-injection, request language,
+and where Twi–English sits between its twins."""
+
+
+@app.function(volumes={"/cache": cache}, cpu=8, memory=32768, timeout=7200)
+def analyse(run: str, model: str, point: str, question: str, categories: dict[str, str], matched_below: int) -> dict:
+    """One question about one read point of one model (see probes.py), next to the stored
+    arrays. `categories` maps family to category; seeds below `matched_below` are the matched
+    twins. Per-layer results come back as lists."""
+    import numpy as np
+
+    from sika_interp import probes
+
+    X, family, language, seed = probes.load(Path("/cache/acts") / run / model.split("/")[-1], point)
+    out: dict = {"n": {lang: int((language == lang).sum()) for lang in ("en", "tw", "en-tw")}}
+    if question in ("family", "threat"):
+        y = family if question == "family" else np.array([categories[f] in THREATS for f in family])
+        out["within"] = {
+            lang: probes.layer_accuracy(X[language == lang], y[language == lang], seed[language == lang]).tolist()
+            for lang in ("en", "tw", "en-tw")
+        }
+        cross = probes.cross_language_accuracy(X, y, language, seed, test=("en", "tw", "en-tw"))
+        out["from_en"] = {k: v.tolist() for k, v in cross.items()}
+        out["chance"] = probes.chance(y)
+    elif question == "language":
+        out["within"] = probes.layer_accuracy(X, language, seed).tolist()
+        out["chance"] = probes.chance(language)
+    else:
+        twins = seed < matched_below
+        placed = probes.twin_placement(X[twins], family[twins], seed[twins], language[twins])
+        out.update({k: v.tolist() for k, v in placed.items()})
+    return out
+
+
+@app.local_entrypoint()
+def probe(run: str, model: str, points: str, matched_below: int = 1_000_010):
+    """Run every `analyse` question on every read point of one model, in parallel, and save
+    the summary JSON locally. `points`: the read-points JSON the `read` entrypoint wrote
+    (for each family's category). Seeds below `matched_below` are the matched twins."""
+    categories = {r["family"]: r["category"] for r in json.loads(Path(points).read_text())}
+    calls = {
+        (point, q): analyse.spawn(run, model, point, q, categories, matched_below) for point in POINTS for q in QUESTIONS
+    }
+    res: dict = {}
+    for (point, q), call in calls.items():
+        res.setdefault(point, {})[q] = call.get()
+    out = Path(f"probes-{run}-{model.split('/')[-1]}.json")
+    out.write_text(json.dumps(res, indent=1))
+
+    def best(xs: list[float]) -> str:
+        i = max(range(len(xs)), key=lambda k: xs[k] if xs[k] == xs[k] else -1)
+        return f"{xs[i]:.2f}@L{i}"
+
+    for point, r in res.items():
+        print(f"{point}: n={r['family']['n']}")
+        for q in ("family", "threat"):
+            within = " ".join(f"{lang} {best(r[q]['within'][lang])}" for lang in ("en", "tw", "en-tw"))
+            cross = " ".join(f"{lang} {best(r[q]['from_en'][lang])}" for lang in ("tw", "en-tw"))
+            print(f"  {q:7} within: {within} | trained on en, tested on: {cross} | chance {r[q]['chance']:.2f}")
+        closer = [x for x in r["placement"]["closer_to_en"] if x == x]
+        print(f"  en-tw nearer its English twin than its Twi twin: {min(closer):.2f}–{max(closer):.2f} across layers")
+    print(f"saved {out}")
 
 
 def first_turns(paths: list[str]) -> dict[str, list[dict]]:

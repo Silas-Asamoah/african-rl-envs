@@ -152,7 +152,8 @@ def twin_placement(X: np.ndarray, family: ArrayLike, seed: ArrayLike, language: 
 
 
 POINTS = ("request_end", "reasoning_end", "action_start")
-"""The read points `modal_app.read_points` records, in the order it stores them."""
+"""The read points `modal_app.read_points` records, in the order it stores them (mirrors
+`modal_app.POINTS`, which can't import this module's dependencies locally)."""
 
 
 def load(directory: str | Path, point: str = "request_end", key: str = "residual") -> tuple[np.ndarray, ...]:
