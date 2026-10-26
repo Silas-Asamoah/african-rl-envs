@@ -388,6 +388,9 @@ def read(traces: str, run: str, batch: int = 100):
     for model, job in jobs:
         rows += [dict(r, model=model) for r in job.get()]
     out = Path(f"read-points-{run}.json")
+    if out.exists():  # a later batch for the same run: keep earlier episodes, replace repeats
+        new = {(r["model"], r["task_id"]) for r in rows}
+        rows = [r for r in json.loads(out.read_text()) if (r["model"], r["task_id"]) not in new] + rows
     out.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
     for model in sorted({r["model"] for r in rows}):
         mine = [r for r in rows if r["model"] == model]
