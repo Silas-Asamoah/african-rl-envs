@@ -1,11 +1,14 @@
 """Internal-measurement jobs on Modal: load a model on a GPU and look at what it computes on
-the prompts it saw in sika-agent episodes.
+the prompts it saw in sika-agent episodes. Entrypoints (`modal run sika_interp/modal_app.py::<name>`):
 
-    uvx modal run -m sika_interp.modal_app --traces outputs/<run>/traces.jsonl[,<more>]
+- main: re-render every turn and check it against the server's prompt length;
+- read: the residual stream and MLP neurons at three read points of each episode;
+- probe, link: per-layer probes, and the probes tied to each episode's outcome;
+- tokens: token-level states of each request, for switch points;
+- cues: which words carry the scam cue in Twi–English requests (masking);
+- build_map: every neuron's scores and place, and cards for the strongest;
+- steer_run: the steer lens on the map's candidates at scam decision points.
 
-For now this re-renders every turn of each episode, checks the prompt length against what
-the vLLM server reported (so internal measurements see exactly the served tokens), and
-records the residual stream and MLP neurons at the last prompt token of each turn.
 Versions match the vLLM install on the Prime pod (torch 2.13, transformers 5.19).
 """
 
@@ -476,6 +479,72 @@ class Model:
         return results
 
 
+    def turn_logprobs(self, messages: list[dict], tools: list[dict], response: dict):
+        """Log-probabilities over the vocabulary at each token of `response` (reasoning and
+        action), teacher-forced after `messages` as the model saw them."""
+        import torch
+
+        prompt, full = self.render_turn(messages, tools, response)
+        with torch.no_grad():
+            logits = self.model(input_ids=torch.tensor([full], device="cuda")).logits[0].float()
+        end = len(full)
+        if self.reasoning_prompt:  # placeholder messages follow the turn for Mistral's tokenizer
+            end = next(
+                (k for k in range(len(prompt), len(full)) if self.tok.decode([full[k]]).strip() in ("[TOOL_RESULTS]", "[INST]")),
+                len(full),
+            )
+        return torch.log_softmax(logits[len(prompt) - 1 : end - 1], -1)
+
+    @modal.method()
+    def step_links(self, episode: dict) -> dict:
+        """Thought-anchors links between an episode's steps, from the inside: for each step i
+        (a user message, a tool result, or a model turn with its tool results) and each later
+        model turn j, the mean KL divergence over turn j's tokens between the turn as the model
+        saw it and with step i deleted from its history."""
+        import torch
+
+        turns_ = episode["turns"]  # [{messages, response}] in order
+        last = turns_[-1]["messages"] + [dict(turns_[-1]["response"], role="assistant")]
+        # Steps: every message after the system prompt, a model turn grouped with its tool results.
+        steps, k = [], 1
+        while k < len(last):
+            group = [k]
+            if last[k]["role"] == "assistant":
+                while k + 1 < len(last) and last[k + 1]["role"] == "tool":
+                    k += 1
+                    group.append(k)
+            steps.append(group)
+            k += 1
+        base = [self.turn_logprobs(t["messages"], episode["tools"], t["response"]) for t in turns_]
+        links = []
+        for i, group in enumerate(steps):
+            for j, t in enumerate(turns_):
+                if group[0] >= len(t["messages"]):
+                    continue  # step i comes after turn j
+                if group[0] == 1:
+                    continue  # deleting the request leaves nothing to compare
+                kept = [m for n, m in enumerate(t["messages"]) if n not in group]
+                altered = self.turn_logprobs(kept, episode["tools"], t["response"])
+                n = min(len(altered), len(base[j]))
+                kl = (base[j][:n].exp() * (base[j][:n] - altered[:n])).sum(-1).mean()
+                links.append([i, j, round(float(kl), 4)])
+        described = []
+        for group in steps:
+            m = last[group[0]]
+            calls = [c["function"]["name"] for c in m.get("tool_calls") or []]
+            described.append(
+                {
+                    "role": m["role"],
+                    "calls": calls,
+                    "text": (m.get("content") or "")[:300],
+                    "reasoning": (m.get("reasoning_content") or "")[:600],
+                    "results": [last[g]["content"][:200] for g in group[1:]],
+                }
+            )
+        turn_step = [next(i for i, g in enumerate(steps) if g[0] == len(t["messages"])) for t in turns_]
+        return {"task_id": episode["task_id"], "steps": described, "turn_step": turn_step, "links": links}
+
+
 PAY = ("initiate_transfer", "confirm_transfer")
 """Tools that move money to a person: the harmful choice at a scam decision point."""
 PROTECT = ("report_fraud", "ask_user", "cancel_transfer")
@@ -486,6 +555,107 @@ THREATS = ("scams", "injection")
 
 TOKEN_LAYER_STEP = 4
 """Token-level states are kept at every 4th layer: enough to see where things change."""
+
+
+@app.function(volumes={"/cache": cache}, cpu=16, memory=131072, timeout=7200)
+def neuron_map(run: str, model: str, token_run: str, categories: dict[str, str], per_layer: int = 3) -> dict:
+    """Every MLP neuron of `model`, for the map: a 2-D place per layer (its write direction's
+    top two principal components across the layer), and scores from the study's episodes:
+    scam or injection against the rest at the end of the request and at the action, Twi
+    against English and Twi–English against English at the end of the request, language
+    entropy, and from the token job, switch tokens against other words and English against
+    Twi words inside Twi–English requests. Candidates (top `per_layer` per score per layer)
+    get a card: logit lens and direct-path wiring. Saved under maps/<run>/<model>/."""
+    import numpy as np
+    import torch
+    from transformers import AutoModelForImageTextToText, AutoTokenizer
+
+    from sika_interp import neurons
+
+    name = model.split("/")[-1]
+    acts = Path("/cache/acts") / run / name
+    A_req, family, language, _ = neurons.load_mlp(acts, "request_end")
+    A_act, family_act, language_act, _ = neurons.load_mlp(acts, "action_start")
+    threat = np.array([categories[f] in THREATS for f in family])
+    threat_act = np.array([categories[f] in THREATS for f in family_act])
+    en_tw = np.isin(language, ["en", "tw"])
+    en_mix = np.isin(language, ["en", "en-tw"])
+    pref = neurons.language_preference(A_req, language)
+    scores = {
+        "scam_at_request": neurons.selectivity(A_req, threat),
+        "scam_at_action": neurons.selectivity(A_act, threat_act),
+        "twi_over_english": neurons.selectivity(A_req[en_tw], language[en_tw] == "tw"),
+        "mixed_over_english": neurons.selectivity(A_req[en_mix], language[en_mix] == "en-tw"),
+        "language_specific": np.log(3) - pref["entropy"],
+    }
+    sums = [np.load(p) for p in sorted((Path("/cache/tokens") / token_run / name).glob("mlp-*.npz"))]
+    if sums:
+        total = {k: sum(s[k] for s in sums) for k in sums[0].files}
+
+        def d(a: str, b: str) -> np.ndarray:
+            ma, mb = total[f"{a}_sum"] / total[f"{a}_n"], total[f"{b}_sum"] / total[f"{b}_n"]
+            va = total[f"{a}_sq"] / total[f"{a}_n"] - ma**2
+            vb = total[f"{b}_sq"] / total[f"{b}_n"] - mb**2
+            return ((ma - mb) / np.sqrt((va + vb) / 2 + 1e-6)).astype(np.float32)
+
+        scores["switch"] = d("switch", "other")
+        scores["english_word_in_mix"] = d("en", "tw")
+    del A_req, A_act
+
+    tok = AutoTokenizer.from_pretrained(model)
+    net = AutoModelForImageTextToText.from_pretrained(model, dtype=torch.bfloat16, device_map="cpu")
+    layers = next(m for n, m in net.named_modules() if n.endswith("language_model.layers") and isinstance(m, torch.nn.ModuleList))
+    n_layers, width = len(layers), layers[0].mlp.down_proj.in_features
+    hidden = layers[0].mlp.down_proj.out_features
+    # Every neuron's write direction and read (gate) direction, one row each, layer by layer.
+    writes = np.empty((n_layers * width, hidden), np.float32)
+    reads = np.empty((n_layers * width, hidden), np.float32)
+    for k, layer in enumerate(layers):
+        writes[k * width : (k + 1) * width] = layer.mlp.down_proj.weight.detach().float().numpy().T
+        reads[k * width : (k + 1) * width] = layer.mlp.gate_proj.weight.detach().float().numpy()
+    norm = next(m for n, m in net.named_modules() if n.endswith("language_model.norm")).weight.detach().float().numpy()
+    if "qwen" in model.lower():
+        norm = 1 + norm  # Qwen3.5's RMSNorm scales by 1 + weight
+    unembed = net.get_output_embeddings().weight.detach().float().numpy()
+    del net
+
+    places = []
+    for k in range(n_layers):
+        cols = writes[k * width : (k + 1) * width]
+        cols = cols - cols.mean(0)
+        _, _, vt = np.linalg.svd(cols[:: max(1, width // 4096)], full_matrices=False)
+        places.append((cols @ vt[:2].T).astype(np.float16))  # [width, 2]
+
+    cards = []
+    for layer, i, reason in neurons.candidates(scores, per_layer):
+        row = layer * width + i
+        up, down = neurons.logit_lens(writes[row], unembed, norm, k=8)
+        feeds = neurons.wiring(writes[row], reads[(layer + 1) * width :], k=6)
+        fed_by = neurons.wiring_up(reads[row], writes[: layer * width], k=6)
+        cards.append(
+            {
+                "layer": layer,
+                "neuron": i,
+                "reason": reason,
+                "scores": {k: round(float(v[layer, i]), 3) for k, v in scores.items()},
+                "language_mean": [round(float(x), 4) for x in pref["mean"][:, layer, i]],
+                "promotes": [[tok.decode([t]), round(v, 3)] for t, v in up],
+                "suppresses": [[tok.decode([t]), round(v, 3)] for t, v in down],
+                "feeds": [[layer + 1 + r // width, r % width, round(c, 3)] for r, c in feeds],
+                "fed_by": [[r // width, r % width, round(c, 3)] for r, c in fed_by],
+            }
+        )
+    base = Path("/cache/maps") / run / name
+    base.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        base / "map.npz",
+        places=np.stack(places),
+        **{k: v.astype(np.float16) for k, v in scores.items()},
+        prefers=pref["prefers"].astype(np.int8),
+    )
+    (base / "cards.json").write_text(json.dumps(cards, ensure_ascii=False))
+    cache.commit()
+    return {"cards": len(cards), "layers": n_layers, "width": width, "scores": list(scores)}
 
 
 @app.function(volumes={"/cache": cache}, cpu=8, memory=65536, timeout=7200)
@@ -828,6 +998,108 @@ def steer_test(traces: str, neurons: str = "16:5,20:7", controls: int = 4):
         print(model, "decisions:", res["decisions"], "skipped:", res.get("skipped"))
         for k, v in sorted(res["effects"].items()):
             print("  ", k, v)
+
+
+@app.local_entrypoint()
+def build_map(run: str, model: str, token_run: str, points: str, per_layer: int = 3):
+    """Run `neuron_map` for one model; fetch the result with
+    `modal volume get sika-interp-cache maps/<run>/<model name> <local dir>`."""
+    categories = {r["family"]: r["category"] for r in json.loads(Path(points).read_text())}
+    print(neuron_map.remote(run, model, token_run, categories, per_layer))
+
+
+@app.function(volumes={"/cache": cache}, timeout=600)
+def cards_of(run: str, model: str) -> list[dict]:
+    """A built map's neuron cards."""
+    return json.loads((Path("/cache/maps") / run / model.split("/")[-1] / "cards.json").read_text())
+
+
+@app.function(volumes={"/cache": cache}, timeout=600)
+def save_steering(run: str, model: str, result: dict) -> None:
+    """Keep a steering run's summary beside the model's map."""
+    path = Path("/cache/maps") / run / model.split("/")[-1] / "steering.json"
+    path.write_text(json.dumps(result))
+    cache.commit()
+
+
+@app.local_entrypoint()
+def steer_run(traces: str, run: str, model: str, per_language: int = 20, controls: int = 32, containers: int = 6):
+    """The steer lens for every candidate neuron on `model`'s map, at its scam decision
+    points in `traces`: each neuron's mean shift in the pay-versus-protect margin for a push
+    up and down, overall and per language, and its percentile among random pushes at its
+    layer. Saved locally and beside the map."""
+    cards = cards_of.remote(run, model)
+    picked = sorted({(c["layer"], c["neuron"]) for c in cards})
+    decisions = decision_points(traces.split(","), per_language, SCAM_FAMILIES).get(model, [])
+    step = -(-len(decisions) // containers)
+    calls = [
+        Model(model_id=model).steer.spawn(decisions[i : i + step], [list(n) for n in picked], controls)
+        for i in range(0, len(decisions), step)
+    ]
+    effects: dict[str, list[float]] = {}
+    langs: dict[str, list[str]] = {}
+    kept = []
+    for call in calls:
+        res = call.get()
+        kept += res["decisions"]
+        for key, values in res["effects"].items():
+            effects.setdefault(key, []).extend(values)
+        langs.setdefault("order", []).extend(d["language"] for d in res["decisions"])
+    order = langs.get("order", [])
+
+    def mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else float("nan")
+
+    controls_by_layer: dict[int, list[float]] = {}
+    for key, values in effects.items():
+        kind, layer, _, _ = key.split(":")
+        if kind == "control":
+            controls_by_layer.setdefault(int(layer), []).append(abs(mean(values)))
+    neurons_out = []
+    for layer, i in picked:
+        row = {"layer": layer, "neuron": i}
+        for sign in ("+1", "-1"):
+            values = effects.get(f"neuron:{layer}:{i}:{sign}", [])
+            row[f"push{sign[0]}"] = round(mean(values), 3)
+            row[f"push{sign[0]}_by_language"] = {
+                lang: round(mean([v for v, l in zip(values, order) if l == lang]), 3) for lang in ("en", "tw", "en-tw")
+            }
+            pool = controls_by_layer.get(layer, [])
+            row[f"push{sign[0]}_percentile"] = round(100 * sum(c < abs(mean(values)) for c in pool) / max(len(pool), 1), 1)
+        neurons_out.append(row)
+    result = {"model": model, "decisions": kept, "neurons": neurons_out, "controls_per_layer": controls}
+    save_steering.remote(run, model, result)
+    out = Path(f"steering-{run}-{model.split('/')[-1]}.json")
+    out.write_text(json.dumps(result))
+    strongest = sorted(neurons_out, key=lambda r: -max(abs(r["push+"]), abs(r["push-"])))[:12]
+    print(f"{model}: {len(kept)} decisions, {len(neurons_out)} neurons, {controls} controls per layer")
+    print("  baseline margin by language:", {lang: round(mean([d["margin"] for d in kept if d["language"] == lang]), 2) for lang in ("en", "tw", "en-tw")})
+    for r in strongest:
+        print(f"  L{r['layer']:>2} n{r['neuron']:<6} push up {r['push+']:+.2f} ({r['push+_percentile']:.0f}th pct)  push down {r['push-']:+.2f} ({r['push-_percentile']:.0f}th pct)")
+    print(f"saved {out}")
+
+
+@app.local_entrypoint()
+def anchors(traces: str, model: str, task_ids: str):
+    """Step links (`step_links`) for the episodes `task_ids` (comma-separated) of `model` in
+    `traces`, one GPU container per episode; saved locally as anchors-links-<model>.json."""
+    wanted = task_ids.split(",")
+    episodes = []
+    for path in traces.split(","):
+        for trace in load(path):
+            data = trace["task"]["data"]
+            if data["id"] in wanted and trace["agent"]["config"]["model"] == model:
+                ts = turns(trace)
+                episodes.append(
+                    {"task_id": data["id"], "tools": ts[0].tools, "turns": [{"messages": t.messages, "response": t.response} for t in ts]}
+                )
+    results = list(Model(model_id=model).step_links.map(episodes))
+    out = Path(f"anchors-links-{model.split('/')[-1]}.json")
+    out.write_text(json.dumps(results, ensure_ascii=False))
+    for r in results:
+        strongest = sorted(r["links"], key=lambda x: -x[2])[:4]
+        print(f"{r['task_id']}: {len(r['steps'])} steps, strongest links (from step, to turn, KL): {strongest}")
+    print(f"saved {out}")
 
 
 @app.local_entrypoint()
