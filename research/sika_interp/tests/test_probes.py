@@ -2,14 +2,17 @@ import warnings
 
 import numpy as np
 import pytest
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold, cross_val_score
 
 from sika_interp.probes import (
     chance,
     cross_language_accuracy,
     folds_by_group,
+    held_out_scores,
     layer_accuracy,
     load,
+    placement_margins,
     probe,
     twin_placement,
 )
@@ -188,3 +191,31 @@ def test_load_stacks_one_read_point_with_labels_from_file_names(tmp_path):
     reasoning = load(tmp_path, point="reasoning_end")
     assert reasoning[1].tolist() == ["promo_fee"]
     assert reasoning[0][0, 0, 0] == pytest.approx(1.1, abs=1e-2)
+
+
+def test_held_out_scores_transfer_a_shared_direction_and_never_see_a_twin():
+    rng = np.random.default_rng(3)
+    seeds = np.repeat(np.arange(40), 3)
+    language = np.tile(["en", "tw", "en-tw"], 40)
+    y = np.repeat(rng.random(40) < 0.4, 3)
+    A = rng.normal(size=(120, 32))
+    A[:, 0] += np.where(y, 4.0, -4.0)
+    scores = held_out_scores(A, y, language, seeds)
+    assert not np.isnan(scores).any()
+    for lang in ("tw", "en-tw"):
+        mask = language == lang
+        # Regularised probabilities lean towards the base rate; the ranking is what transfers.
+        assert roc_auc_score(y[mask], scores[mask]) > 0.85
+
+
+def test_placement_margins_sign_follows_the_nearer_twin():
+    family = np.array(["promo_fee"] * 6)
+    seed = np.array([1, 1, 1, 2, 2, 2])
+    language = np.array(["en", "tw", "en-tw"] * 2)
+    base = np.eye(6)
+    A = base.copy()
+    A[2] = base[0] * 0.9 + base[1] * 0.1  # seed 1: nearer English
+    A[5] = base[3] * 0.1 + base[4] * 0.9  # seed 2: nearer Twi
+    margins = placement_margins(A, family, seed, language)
+    assert set(margins) == {2, 5}
+    assert margins[2] > 0 > margins[5]

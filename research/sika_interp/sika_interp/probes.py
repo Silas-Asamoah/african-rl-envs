@@ -174,3 +174,33 @@ def load(directory: str | Path, point: str = "request_end", key: str = "residual
         raise FileNotFoundError(f"no {point} arrays in {directory}")
     family, language, seed = (np.array(c) for c in zip(*rows))
     return np.stack(arrays), family, language, seed
+
+
+def held_out_scores(
+    A: np.ndarray, y: ArrayLike, language: ArrayLike, seed: ArrayLike, train: str = "en", folds: int = 5, C: float = 0.1
+) -> np.ndarray:
+    """Per-episode probability of the positive class from a probe trained on `train`-language
+    episodes, each scored by a probe that never saw its seed (so never its twins). `A` is one
+    layer, [episodes, width]; `y` is boolean. Every language gets a score."""
+    y, language = np.asarray(y, dtype=bool), np.asarray(language)
+    out = np.full(len(y), np.nan)
+    for tr, te in folds_by_group(seed, folds):
+        trn = tr[language[tr] == train]
+        fitted = probe(C).fit(A[trn].astype(np.float64), y[trn])
+        out[te] = fitted.predict_proba(A[te].astype(np.float64))[:, list(fitted.classes_).index(True)]
+    return out
+
+
+def placement_margins(A: np.ndarray, family: ArrayLike, seed: ArrayLike, language: ArrayLike) -> dict[int, float]:
+    """For each Twi–English episode with both twins, by row index: its centred cosine to its
+    English twin minus that to its Twi twin, at one layer `A` [episodes, width]. Positive
+    means it sits nearer the English twin."""
+    family, seed, language = (np.asarray(v) for v in (family, seed, language))
+    index = {k: i for i, k in enumerate(zip(family.tolist(), seed.tolist(), language.tolist()))}
+    V = A.astype(np.float64) - A.astype(np.float64).mean(axis=0)
+    V /= np.maximum(np.linalg.norm(V, axis=1, keepdims=True), 1e-12)
+    out = {}
+    for (f, s, lang), i in index.items():
+        if lang == "en-tw" and (f, s, "en") in index and (f, s, "tw") in index:
+            out[i] = float(V[i] @ V[index[(f, s, "en")]] - V[i] @ V[index[(f, s, "tw")]])
+    return out
