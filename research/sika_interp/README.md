@@ -19,6 +19,10 @@ Ministral 3 8B Reasoning, both run on our own GPUs. Work in progress: no results
   model card recommends; without it the model doesn't reason. Runs as a proxy in front of
   vLLM, and the internal-measurement jobs use the same function to render prompts.
 - `sika_interp/traces.py`: rebuilds each turn's exact chat request from an eval trace.
+- `sika_interp/modal_app.py`: loads a model on a Modal GPU, re-renders every turn of the
+  given episodes, checks each against the prompt length the server reported, and saves the
+  residual stream and MLP neurons at the last prompt token:
+  `uvx modal run -m sika_interp.modal_app --traces outputs/<run>/traces.jsonl`.
 
 ## Playing episodes on a Prime GPU pod
 
