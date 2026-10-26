@@ -1,0 +1,787 @@
+<title>Sika Anchors</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap">
+<style>
+/* Layout: an instrument panel. Top: the episode as thought-anchor rings, English beside its
+   Twi twin, with the trace alongside. Bottom: the model's MLP neurons as glowing layer sheets,
+   with the selected neuron's card. One selection drives both halves. Deliberately dark only. */
+:root {
+  color-scheme: dark;
+  --bg: #06080a;
+  --panel: #0c1013;
+  --raise: #12181c;
+  --line: #1c252b;
+  --ink: #e4ecef;
+  --muted: #8796a0;
+  --faint: #56636b;
+  --en: #6fa8ff;
+  --tw: #ffb347;
+  --mx: #c792ea;
+  --good: #5fe0a0;
+  --bad: #ff5c5c;
+  --excite: #ffd25e;
+  --inhibit: #ff6fc3;
+  --display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --ui: "Geist", "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--ink); }
+body {
+  margin: 0; font: 14px/1.5 var(--ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 18px 40px;
+}
+.wrap { max-width: 1480px; margin: 0 auto; display: grid; gap: 14px; }
+header.bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+h1 { font: 400 2.1rem/1 var(--display); margin: 0; letter-spacing: 0.005em; }
+h1 em { font-style: italic; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: 500 0.74rem/1 var(--mono); color: var(--muted); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; white-space: nowrap;
+}
+.chip b { color: var(--ink); font-weight: 500; }
+button.chip { cursor: pointer; }
+button.chip:hover { border-color: var(--faint); color: var(--ink); }
+.note {
+  border: 1px solid #4a3b1a; background: #1a1408; color: #f3d08b;
+  border-radius: 8px; padding: 8px 12px; font-size: 0.86rem; max-width: 110ch;
+}
+.grid-top { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; }
+.grid-low { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1080px) { .grid-top, .grid-low { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.panel-h {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+}
+.panel-h h2 { font: 500 0.78rem/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.seg { display: inline-flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg button {
+  font: 500 0.76rem var(--mono); color: var(--muted); background: none; border: 0; border-radius: 6px;
+  padding: 5px 9px; cursor: pointer;
+}
+.seg button[aria-pressed="true"] { background: var(--raise); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.seg button:focus-visible, .chip:focus-visible, .step:focus-visible { outline: 2px solid var(--en); outline-offset: 2px; }
+.ctl { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.ctl label { font: 0.7rem var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* rings */
+.rings { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 4px; padding: 6px 8px 0; }
+.ring { position: relative; cursor: default; }
+.ring svg { display: block; width: 100%; height: auto; }
+.ring svg text { font-family: var(--mono); }
+.ring .node { cursor: pointer; }
+.ring.inactive { opacity: 0.55; }
+.ring.inactive:hover { opacity: 0.8; }
+.harm { padding: 4px 14px 12px; }
+.harm svg { display: block; width: 100%; height: auto; }
+.harm svg text { font: 10px var(--mono); fill: var(--faint); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 14px 14px; font-size: 0.78rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.hollow { background: transparent !important; border: 2px solid; width: 10px; height: 10px; }
+
+/* trace */
+.trace { list-style: none; margin: 0; padding: 6px; overflow-y: auto; max-height: 700px; display: grid; gap: 2px; }
+@media (max-width: 1080px) { .trace { max-height: 460px; } }
+.step {
+  display: grid; grid-template-columns: 2.1rem minmax(0, 1fr) 3.2rem; gap: 10px; align-items: start;
+  padding: 7px 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+}
+.step:hover { background: var(--raise); }
+.step.sel { background: var(--raise); border-color: var(--faint); }
+.step .n { font: 0.72rem var(--mono); color: var(--faint); padding-top: 2px; text-align: right; }
+.step .body { min-width: 0; display: grid; gap: 3px; }
+.step .tag { font: 500 0.68rem/1.2 var(--mono); letter-spacing: 0.04em; display: inline-flex; align-items: center; gap: 6px; }
+.step .txt { overflow-wrap: anywhere; }
+.step .txt.code { font: 0.8rem/1.45 var(--mono); color: #cfe0e6; }
+.step.env .txt { color: var(--muted); font-size: 0.86rem; }
+.step.third .txt { border-left: 2px solid #ff9e6b; padding-left: 8px; color: #e7c3b0; max-height: 7.5em; overflow: hidden; }
+.step .imp { font: 0.7rem var(--mono); color: var(--muted); text-align: right; display: grid; gap: 4px; justify-items: end; padding-top: 2px; }
+.step .imp i { display: block; height: 3px; border-radius: 2px; background: var(--ink); }
+
+/* map */
+.map { position: relative; height: 560px; overflow: hidden; border-radius: 0 0 12px 12px; background: radial-gradient(120% 90% at 50% 40%, #0b1216 0%, #050709 70%); }
+@media (max-width: 700px) { .map { height: 380px; } }
+.map canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.map .lbl { position: absolute; font: 10px var(--mono); color: #8fb2c2; pointer-events: none; transform: translate(-50%, -100%); white-space: nowrap; }
+.map .tip {
+  position: absolute; pointer-events: none; background: rgba(8, 12, 14, 0.92); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; font: 11px var(--mono); color: var(--ink); white-space: nowrap; transform: translate(10px, -50%);
+}
+.map .fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); padding: 24px; text-align: center; }
+.map .hint { position: absolute; left: 12px; bottom: 10px; font: 10.5px var(--mono); color: var(--faint); pointer-events: none; }
+.active-list { padding: 10px 14px 14px; display: grid; gap: 8px; border-top: 1px solid var(--line); }
+.active-list .lab, .card .lab { font: 0.68rem var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* card */
+.card { padding: 14px 16px 16px; display: grid; gap: 16px; align-content: start; }
+.card h3 { margin: 0; font: 500 1.05rem var(--mono); }
+.card .sub { color: var(--muted); font-size: 0.84rem; }
+.bars { display: grid; gap: 5px; }
+.brow { display: grid; grid-template-columns: 6.6rem minmax(0, 1fr) 3.4rem; gap: 8px; align-items: center; font: 0.76rem var(--mono); color: var(--muted); }
+.brow .track { height: 8px; background: var(--raise); border-radius: 4px; position: relative; overflow: hidden; }
+.brow .fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.brow .val { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.toks { display: flex; flex-wrap: wrap; gap: 4px; }
+.tok { font: 0.76rem var(--mono); background: var(--raise); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; white-space: pre; }
+.tok.up { border-color: #3c4f2a; color: #cfe8a8; }
+.tok.down { border-color: #4f2a3a; color: #f0b3c9; }
+.steer { display: grid; grid-template-columns: 7.6rem 1fr 1fr; gap: 4px 10px; font: 0.76rem var(--mono); align-items: center; }
+.steer .h { color: var(--faint); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.div { position: relative; height: 10px; background: var(--raise); border-radius: 3px; }
+.div::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--faint); }
+.div i { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; }
+.wire { display: flex; flex-wrap: wrap; gap: 5px; }
+.wire button { font: 0.74rem var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 7px; cursor: pointer; color: var(--ink); }
+.wire button .sw { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+.strip svg { display: block; width: 100%; height: auto; }
+.empty { color: var(--muted); font-size: 0.88rem; display: grid; gap: 10px; }
+footer { color: var(--faint); font-size: 0.8rem; display: grid; gap: 4px; max-width: 120ch; }
+footer a { color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .ring .node circle, .ring path.link { transition: opacity .2s ease, r .2s ease; } }
+</style>
+
+<div class="wrap">
+  <header class="bar">
+    <h1>Sika Anchors <em>· steps and neurons</em></h1>
+    <div class="chips" id="meta"></div>
+  </header>
+  <div class="note" id="note" hidden></div>
+
+  <div class="grid-top">
+    <section class="panel" aria-labelledby="ring-h">
+      <div class="panel-h">
+        <h2 id="ring-h">Thought anchors</h2>
+        <div class="ctl">
+          <label for="sz-imp">Size</label>
+          <div class="seg" role="group" aria-label="Node size">
+            <button type="button" id="sz-imp" data-size="importance" aria-pressed="true">Resampling importance</button>
+            <button type="button" id="sz-harm" data-size="harm" aria-pressed="false">Harm shift</button>
+          </div>
+          <label for="lk-3">Links</label>
+          <div class="seg" role="group" aria-label="Causal links per step">
+            <button type="button" id="lk-1" data-links="1" aria-pressed="false">1</button>
+            <button type="button" id="lk-3" data-links="3" aria-pressed="true">3</button>
+            <button type="button" id="lk-6" data-links="6" aria-pressed="false">6</button>
+          </div>
+        </div>
+      </div>
+      <div class="rings" id="rings"></div>
+      <div class="harm" id="harm"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section class="panel" aria-labelledby="trace-h">
+      <div class="panel-h"><h2 id="trace-h">Trace</h2><span class="chip" id="trace-lang"></span></div>
+      <ol class="trace" id="trace"></ol>
+    </section>
+  </div>
+
+  <div class="grid-low">
+    <section class="panel" aria-labelledby="map-h">
+      <div class="panel-h">
+        <h2 id="map-h">Neuron map</h2>
+        <div class="ctl">
+          <label for="c-lang">Colour</label>
+          <div class="seg" role="group" aria-label="Neuron colour">
+            <button type="button" id="c-lang" data-color="lang" aria-pressed="true">Language</button>
+            <button type="button" id="c-scam" data-color="scam" aria-pressed="false">Scam</button>
+          </div>
+          <span class="chip" id="map-legend"></span>
+        </div>
+      </div>
+      <div class="map" id="map">
+        <canvas id="map-canvas" aria-label="3D map of MLP neurons by layer"></canvas>
+        <div class="hint">drag to orbit · scroll or pinch to zoom · tap a bright neuron</div>
+      </div>
+      <div class="active-list" id="active"></div>
+    </section>
+    <section class="panel" aria-labelledby="card-h">
+      <div class="panel-h"><h2 id="card-h">Neuron</h2><span class="chip" id="card-id">none selected</span></div>
+      <div class="card" id="card"></div>
+    </section>
+  </div>
+
+  <footer>
+    <p>Rings follow Thought Anchors (Bogdan, Macar, Nanda and Conmy, 2025): each agent step is resampled and scored on the final wallet; importance is how far the outcome moves. User messages and tool results are hollow, sized by how much deleting them changes the agent's later steps. The neuron map follows neuron-explorer: one point per MLP neuron, layers as sheets, wiring from direct-path weights, lenses from the unembedding and from steering.</p>
+    <p>Built by <span style="font-family: var(--mono)">scripts/build_anchor_page.py</span> in african-rl-envs.</p>
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const DATA = /*__DATA__*/null;
+
+const LANG = {
+  en: { name: "English", color: "#6fa8ff" },
+  tw: { name: "Twi", color: "#ffb347" },
+  "en-tw": { name: "Twi–English", color: "#c792ea" },
+};
+const TAGS = {
+  user_request: ["User request", "#8796a0"], user_reply: ["User reply", "#8796a0"], user_insists: ["User insists", "#ff5c8a"],
+  third_party_text: ["Third-party text", "#ff9e6b"], wallet_data: ["Wallet data", "#4d5d66"], tool_error: ["Tool error", "#7a5050"],
+  reasoning: ["Reasoning", "#a9b8c9"], check_wallet: ["Checks wallet", "#4fd1c5"], verify_with_user: ["Checks with user", "#f2d16b"],
+  move_money: ["Moves money", "#ff5c5c"], protect: ["Protects user", "#5fe0a0"], send_sms: ["Sends SMS", "#ff8fd1"],
+  lender_request: ["Lender request", "#a0a8ff"], reply: ["Final reply", "#e4ecef"], other: ["Other", "#6b7780"],
+};
+const ACTION_LABEL = { move_money: "Transfer money", ask_user: "Ask the user", report_fraud: "Report fraud", read_messages: "Read messages" };
+const OUTCOME = { success: ["Success", "var(--good)"], harmful: ["Harmful", "var(--bad)"], fail: ["Failed", "var(--muted)"] };
+const NS = "http://www.w3.org/2000/svg";
+const state = { lang: null, step: null, neuron: null, links: 3, size: "importance", color: "lang" };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const fmt = (v, d = 2) => (v == null || Number.isNaN(v) ? "–" : Number(v).toFixed(d));
+const tag = (t) => TAGS[t] || TAGS.other;
+function svg(tag, attrs = {}, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+
+/* ---------- data shaping ---------- */
+const EPS = DATA ? DATA.episodes : {};
+const LANGS = Object.keys(EPS);
+const NEURONS = (DATA && DATA.neurons && DATA.neurons.neurons) || [];
+const NBYID = Object.fromEntries(NEURONS.map((n) => [n.id, n]));
+let IMP_MAX = 1e-9, HARM_MAX = 1e-9, OUT_MAX = 1e-9, KL_MAX = 1e-9;
+for (const l of LANGS) {
+  const e = EPS[l];
+  e.out = {};
+  for (const k of e.links) { e.out[k.from] = (e.out[k.from] || 0) + k.kl; KL_MAX = Math.max(KL_MAX, k.kl); }
+  for (const s of e.steps) {
+    if (s.role === "agent") { IMP_MAX = Math.max(IMP_MAX, s.importance || 0); HARM_MAX = Math.max(HARM_MAX, Math.abs(s.d_harm || 0)); }
+    else OUT_MAX = Math.max(OUT_MAX, e.out[s.i] || 0);
+  }
+}
+
+function prettyCall(text) {
+  const body = text.replace(/<\/?tool_call>/g, "").trim();
+  try {
+    const o = JSON.parse(body);
+    const args = Object.entries(o.arguments || {}).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ");
+    return `${o.name}(${args})`;
+  } catch (e) {
+    const m = body.match(/<function=([\w.-]+)>/);
+    if (m) {
+      const ps = [...body.matchAll(/<parameter=([\w.-]+)>\s*([\s\S]*?)\s*<\/parameter>/g)].map((p) => `${p[1]}: ${p[2]}`);
+      return `${m[1]}(${ps.join(", ")})`;
+    }
+    return body;
+  }
+}
+const isCall = (s) => s.role === "agent" && s.tool;
+function stepText(s, max = 0) {
+  const t = isCall(s) ? prettyCall(s.text) : s.text;
+  return max && t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+function anchorOf(e) {
+  return e.steps.filter((s) => s.role === "agent").reduce((a, s) => ((s.importance || 0) > (a ? a.importance || 0 : -1) ? s : a), null);
+}
+
+/* ---------- header ---------- */
+function renderMeta() {
+  const n = DATA.neurons;
+  const items = [
+    ["model", DATA.model], ["task", DATA.family.replaceAll("_", " ")], ["seed", DATA.seed],
+    ["resamples", DATA.rollouts], n ? ["neurons", `${n.neurons.length} mapped · ${n.layers.length} layers`] : null,
+  ].filter(Boolean);
+  document.getElementById("meta").innerHTML = items.map(([k, v]) => `<span class="chip">${k} <b>${esc(v)}</b></span>`).join("");
+  if (DATA.note) { const el = document.getElementById("note"); el.textContent = DATA.note; el.hidden = false; }
+}
+
+/* ---------- rings ---------- */
+function renderRings() {
+  const box = document.getElementById("rings");
+  box.replaceChildren();
+  for (const l of LANGS) {
+    const div = document.createElement("div");
+    div.className = "ring" + (l === state.lang ? "" : " inactive");
+    div.appendChild(ringSvg(l));
+    div.addEventListener("click", (ev) => { if (ev.target.closest(".node")) return; if (state.lang !== l) { state.lang = l; state.step = null; renderAll(); } });
+    box.appendChild(div);
+  }
+}
+
+function ringSvg(l) {
+  const e = EPS[l];
+  const W = 540, C = 270, R = 158;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${W}`, role: "img", "aria-label": `${LANG[l].name} episode as a ring of steps` });
+  const N = e.steps.length;
+  const pos = e.steps.map((s, k) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * k) / N;
+    return { x: C + R * Math.cos(a), y: C + R * Math.sin(a), a };
+  });
+  const active = l === state.lang;
+  const selStep = active ? state.step : null;
+
+  // faint guide ring and sequential arcs
+  svg("circle", { cx: C, cy: C, r: R, fill: "none", stroke: "#1c252b", "stroke-width": 1 }, root);
+  for (let k = 0; k + 1 < N; k++) {
+    const p = pos[k], q = pos[k + 1];
+    svg("path", { d: `M${p.x},${p.y} A${R},${R} 0 0 1 ${q.x},${q.y}`, fill: "none", stroke: "#3a4850", "stroke-width": 1.4 }, root);
+  }
+
+  // causal links: strongest incoming per agent step
+  const incoming = {};
+  for (const k of e.links) (incoming[k.to] = incoming[k.to] || []).push(k);
+  const shown = [];
+  for (const t in incoming) shown.push(...incoming[t].sort((a, b) => b.kl - a.kl).slice(0, state.links));
+  const linkG = svg("g", {}, root);
+  for (const k of shown.sort((a, b) => a.kl - b.kl)) {
+    const p = pos[k.from], q = pos[k.to];
+    const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+    let da = Math.abs(p.a - q.a) % (2 * Math.PI); if (da > Math.PI) da = 2 * Math.PI - da;
+    const pull = 0.85 * (1 - da / Math.PI);  // neighbours: shallow chord; opposite steps: through the centre
+    const cx = C + (mx - C) * pull, cy = C + (my - C) * pull;
+    const w = Math.sqrt(k.kl / KL_MAX);
+    const touches = selStep == null || k.from === selStep || k.to === selStep;
+    svg("path", {
+      class: "link", d: `M${p.x},${p.y} Q${cx},${cy} ${q.x},${q.y}`, fill: "none",
+      stroke: tag(e.steps[k.from].tag)[1], "stroke-width": 0.6 + 3.6 * w, "stroke-dasharray": "3 3",
+      opacity: touches ? 0.18 + 0.72 * w : 0.04, "stroke-linecap": "round",
+    }, linkG);
+  }
+
+  // neuron halo (where the selected neuron fires)
+  const act = state.neuron && e.activity ? e.steps.map((s) => (e.activity[s.i] || {})[state.neuron]) : null;
+  const actMax = act ? Math.max(1e-9, ...act.filter((v) => v != null).map(Math.abs)) : 1;
+
+  // nodes
+  const anchors = e.steps.filter((s) => s.role === "agent").sort((a, b) => (b.importance || 0) - (a.importance || 0)).slice(0, 3).map((s) => s.i);
+  e.steps.forEach((s, k) => {
+    const p = pos[k];
+    const [label, color] = tag(s.tag);
+    const g = svg("g", { class: "node", tabindex: 0, role: "button", "aria-label": `Step ${s.i}: ${label}` }, root);
+    if (act && act[k] != null && act[k] > 0) {
+      svg("circle", { cx: p.x, cy: p.y, r: 10 + 16 * (act[k] / actMax), fill: "#ffffff", opacity: 0.08 + 0.3 * (act[k] / actMax) }, g);
+    }
+    let r;
+    if (s.role === "agent") {
+      const v = state.size === "harm" ? Math.abs(s.d_harm || 0) / HARM_MAX : (s.importance || 0) / IMP_MAX;
+      r = 4.5 + 15 * Math.sqrt(v);
+      svg("circle", { cx: p.x, cy: p.y, r, fill: color, "fill-opacity": 0.35 + 0.65 * Math.sqrt(v) }, g);
+      if (state.size === "harm" && (s.d_harm || 0) !== 0) {
+        svg("circle", { cx: p.x, cy: p.y, r: r + 3, fill: "none", stroke: s.d_harm > 0 ? "#ff5c5c" : "#5fe0a0", "stroke-width": 1.5 }, g);
+      }
+    } else {
+      const v = (e.out[s.i] || 0) / OUT_MAX;
+      r = 4 + 12 * Math.sqrt(v);
+      svg("circle", { cx: p.x, cy: p.y, r, fill: "#06080a", stroke: color, "stroke-width": 2 }, g);
+    }
+    if (selStep === s.i) svg("circle", { cx: p.x, cy: p.y, r: r + 6, fill: "none", stroke: "#ffffff", "stroke-width": 1.2, "stroke-dasharray": "2 3" }, g);
+    const lx = C + (R + r + 14) * Math.cos(p.a), ly = C + (R + r + 14) * Math.sin(p.a);
+    svg("text", { x: lx, y: ly + 3.5, "text-anchor": "middle", "font-size": 10, fill: "#56636b" }, g).textContent = s.i;
+    const rank = anchors.indexOf(s.i);
+    if (rank >= 0 && (s.importance || 0) > 0.05 * IMP_MAX) {
+      const ax = C + (R + r + 30) * Math.cos(p.a), ay = C + (R + r + 30) * Math.sin(p.a);
+      svg("text", { x: ax, y: ay + 4, "text-anchor": "middle", "font-size": rank ? 11 : 13, fill: color }, g).textContent = "⚓" + (rank + 1);
+    }
+    svg("title", {}, g).textContent = `Step ${s.i} · ${label}${s.role === "agent" ? ` · importance ${fmt(s.importance)}` : ""}\n${stepText(s, 160)}`;
+    const pick = (ev) => { ev.stopPropagation(); state.lang = l; state.step = state.step === s.i && active ? null : s.i; renderAll(); scrollTrace(); };
+    g.addEventListener("click", pick);
+    g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(ev); } });
+  });
+
+  // centre: language, outcome, anchor
+  svg("circle", { cx: C, cy: C, r: 76, fill: "#06080a", "fill-opacity": 0.82 }, root);
+  const [oLabel, oColor] = OUTCOME[e.outcome] || OUTCOME.fail;
+  svg("text", { x: C, y: C - 22, "text-anchor": "middle", "font-size": 30, fill: LANG[l].color, style: "font-family: var(--display)" }, root).textContent = LANG[l].name;
+  const pill = svg("g", {}, root);
+  svg("rect", { x: C - 46, y: C - 6, width: 92, height: 22, rx: 11, fill: "none", stroke: oColor }, pill);
+  svg("text", { x: C, y: C + 9, "text-anchor": "middle", "font-size": 11, fill: oColor }, pill).textContent = oLabel.toUpperCase();
+  const an = anchorOf(e);
+  if (an) {
+    svg("text", { x: C, y: C + 40, "text-anchor": "middle", "font-size": 10.5, fill: "#8796a0" }, root).textContent = `anchor: step ${an.i} · ${tag(an.tag)[0].toLowerCase()}`;
+    svg("text", { x: C, y: C + 56, "text-anchor": "middle", "font-size": 10.5, fill: "#56636b" }, root).textContent = `importance ${fmt(an.importance)}`;
+  }
+  return root;
+}
+
+function renderHarm() {
+  const e = EPS[state.lang];
+  const box = document.getElementById("harm");
+  box.replaceChildren();
+  const W = 900, H = 104, m = { l: 34, r: 10, t: 8, b: 18 };
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Outcome if resampled from each step" }, box);
+  const N = e.steps.length;
+  const x = (k) => m.l + (W - m.l - m.r) * (N === 1 ? 0.5 : k / (N - 1));
+  const y = (v) => m.t + (H - m.t - m.b) * (1 - v);
+  for (const v of [0, 0.5, 1]) {
+    svg("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: "#1c252b" }, root);
+    svg("text", { x: m.l - 6, y: y(v) + 3, "text-anchor": "end" }, root).textContent = Math.round(v * 100) + "%";
+  }
+  e.steps.forEach((s, k) => {
+    svg("line", { x1: x(k), x2: x(k), y1: H - m.b, y2: H - m.b + 4, stroke: tag(s.tag)[1] }, root);
+    if (state.step === s.i) svg("line", { x1: x(k), x2: x(k), y1: m.t, y2: H - m.b, stroke: "#ffffff", "stroke-opacity": 0.4, "stroke-dasharray": "2 3" }, root);
+  });
+  const pts = (key) => e.steps.map((s, k) => (s.p ? [x(k), y(s.p[key])] : null)).filter(Boolean);
+  for (const [key, color] of [["success", "#5fe0a0"], ["harmful", "#ff5c5c"]]) {
+    const ps = pts(key);
+    if (ps.length) {
+      svg("path", { d: ps.map((p, i) => (i ? "L" : "M") + p.join(",")).join(""), fill: "none", stroke: color, "stroke-width": 1.8 }, root);
+      ps.forEach((p) => svg("circle", { cx: p[0], cy: p[1], r: 2.4, fill: color }, root));
+    }
+  }
+  box.insertAdjacentHTML("beforeend", `<div class="legend" style="padding:6px 0 0"><span>Outcome if the episode is resampled from each step:</span><span><i class="dot" style="background:#5fe0a0"></i>success</span><span><i class="dot" style="background:#ff5c5c"></i>harmful</span><span style="color:var(--faint)">ticks: every step, coloured by type</span></div>`);
+}
+
+function renderLegend() {
+  const used = new Set(LANGS.flatMap((l) => EPS[l].steps.map((s) => s.tag)));
+  const envTags = new Set(LANGS.flatMap((l) => EPS[l].steps.filter((s) => s.role === "env").map((s) => s.tag)));
+  document.getElementById("legend").innerHTML = Object.entries(TAGS).filter(([k]) => used.has(k)).map(([k, [label, color]]) =>
+    `<span><i class="dot${envTags.has(k) ? " hollow" : ""}" style="background:${color};border-color:${color}"></i>${label}</span>`).join("")
+    + `<span style="color:var(--faint)">filled: agent step · hollow: user or tool text · dashed: causal link</span>`;
+}
+
+/* ---------- trace ---------- */
+function renderTrace() {
+  const e = EPS[state.lang];
+  document.getElementById("trace-lang").innerHTML = `<b style="color:${LANG[state.lang].color}">${LANG[state.lang].name}</b> · ${(OUTCOME[e.outcome] || OUTCOME.fail)[0].toLowerCase()}`;
+  const ol = document.getElementById("trace");
+  ol.innerHTML = e.steps.map((s) => {
+    const [label, color] = tag(s.tag);
+    const v = s.role === "agent" ? (s.importance || 0) / IMP_MAX : (e.out[s.i] || 0) / OUT_MAX;
+    const cls = ["step", s.role, s.tag === "third_party_text" ? "third" : "", state.step === s.i ? "sel" : ""].join(" ");
+    const op = s.role === "agent" ? 0.55 + 0.45 * Math.sqrt(v) : 1;
+    const val = s.role === "agent" ? fmt(s.importance) : (e.out[s.i] ? fmt(e.out[s.i], 3) : "");
+    const who = s.role === "agent" ? "agent" : s.tag.startsWith("user") ? "user" : `tool · ${s.tool || ""}`;
+    return `<li class="${cls}" data-i="${s.i}" tabindex="0">
+      <span class="n">${s.i}</span>
+      <span class="body"><span class="tag" style="color:${color}"><i class="dot${s.role === "env" ? " hollow" : ""}" style="background:${color};border-color:${color}"></i>${label} <span style="color:var(--faint)">· ${who}</span></span>
+      <span class="txt${isCall(s) ? " code" : ""}" style="opacity:${op}">${esc(stepText(s, 600))}</span></span>
+      <span class="imp">${val}${val ? `<i style="width:${Math.max(4, 44 * Math.sqrt(v))}px;background:${color}"></i>` : ""}</span>
+    </li>`;
+  }).join("");
+  ol.querySelectorAll(".step").forEach((li) => {
+    const pick = () => { const i = Number(li.dataset.i); state.step = state.step === i ? null : i; renderAll(); };
+    li.addEventListener("click", pick);
+    li.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } });
+  });
+}
+function scrollTrace() {
+  const li = document.querySelector(`#trace .step[data-i="${state.step}"]`);
+  if (li) li.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+/* ---------- neuron map (three.js) ---------- */
+const MAP = { ok: false };
+const hex = (h) => new THREE.Color(h);
+function initMap() {
+  const host = document.getElementById("map");
+  if (!DATA.neurons || typeof THREE === "undefined") {
+    host.insertAdjacentHTML("beforeend", `<div class="fallback">${!DATA.neurons ? "No neuron map in this build. Run neuron_map.py and pass --neurons." : "The 3D view needs WebGL and three.js, which didn't load here."}</div>`);
+    return;
+  }
+  const canvas = document.getElementById("map-canvas");
+  let renderer;
+  try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true }); }
+  catch (e) { host.insertAdjacentHTML("beforeend", `<div class="fallback">WebGL is unavailable in this view.</div>`); return; }
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const nm = DATA.neurons;
+  const layers = nm.layers, L = layers.length;
+  const GAP = Math.max(0.42, Math.min(1.9, 17 / L)), SHEET = 4.2, G = Math.ceil(Math.sqrt(nm.d_mlp));
+  const lx = (layer) => layers.indexOf(layer) * GAP;
+  const P = (layer, idx) => {
+    const row = Math.floor(idx / G), col = idx % G;
+    return new THREE.Vector3(lx(layer), 0.4 + (row / (G - 1)) * SHEET, (col / (G - 1) - 0.5) * SHEET);
+  };
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(34, 1, 0.05, 500);
+  const mid = new THREE.Vector3(((L - 1) * GAP) / 2, 0.4 + SHEET / 2, 0);
+  const dist = Math.max(9.5, L * GAP * 0.78);
+  // a diagonal three-quarter view, as in neuron-explorer: sheet faces visible, depth readable
+  camera.position.copy(mid).add(new THREE.Vector3(-0.95, 0.38, 0.72).normalize().multiplyScalar(dist));
+  const controls = new THREE.OrbitControls(camera, canvas);
+  controls.target.copy(mid);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.update();
+
+  // sheets
+  const sheetGeo = new THREE.PlaneGeometry(SHEET, SHEET);
+  const sheetMat = new THREE.MeshBasicMaterial({ color: 0x8fb4c8, transparent: true, opacity: 0.035, side: THREE.DoubleSide, depthWrite: false });
+  const edgeMat = new THREE.LineBasicMaterial({ color: 0x3a5562, transparent: true, opacity: 0.55 });
+  for (const layer of layers) {
+    const m = new THREE.Mesh(sheetGeo, sheetMat);
+    m.rotation.y = Math.PI / 2;
+    m.position.set(lx(layer), 0.4 + SHEET / 2, 0);
+    scene.add(m);
+    const ed = new THREE.LineSegments(new THREE.EdgesGeometry(sheetGeo), edgeMat);
+    ed.rotation.y = Math.PI / 2;
+    ed.position.copy(m.position);
+    scene.add(ed);
+  }
+  // residual-stream spine
+  const spine = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-GAP, 0.15, 0), new THREE.Vector3(L * GAP, 0.15, 0)]);
+  scene.add(new THREE.Line(spine, new THREE.LineBasicMaterial({ color: 0x24343c })));
+
+  // glow sprite
+  const spr = document.createElement("canvas"); spr.width = spr.height = 64;
+  const cx = spr.getContext("2d"), grd = cx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, "rgba(255,255,255,1)"); grd.addColorStop(0.25, "rgba(255,255,255,0.75)"); grd.addColorStop(1, "rgba(255,255,255,0)");
+  cx.fillStyle = grd; cx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(spr);
+  const ptsMat = (size) => new THREE.PointsMaterial({ size, map: tex, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true });
+
+  // background cloud
+  const bg = nm.background;
+  const bgPos = new Float32Array(bg.length * 3), bgCol = new Float32Array(bg.length * 3);
+  bg.forEach((b, k) => { const p = P(b[0], b[1]); bgPos.set([p.x, p.y, p.z], k * 3); });
+  const bgGeo = new THREE.BufferGeometry();
+  bgGeo.setAttribute("position", new THREE.BufferAttribute(bgPos, 3));
+  bgGeo.setAttribute("color", new THREE.BufferAttribute(bgCol, 3));
+  scene.add(new THREE.Points(bgGeo, ptsMat(0.085)));
+
+  // mapped neurons
+  const fPos = new Float32Array(NEURONS.length * 3), fCol = new Float32Array(NEURONS.length * 3);
+  NEURONS.forEach((n, k) => { const p = P(n.layer, n.idx); fPos.set([p.x, p.y, p.z], k * 3); n._p = p; });
+  const fGeo = new THREE.BufferGeometry();
+  fGeo.setAttribute("position", new THREE.BufferAttribute(fPos, 3));
+  fGeo.setAttribute("color", new THREE.BufferAttribute(fCol, 3));
+  const fPts = new THREE.Points(fGeo, ptsMat(0.26));
+  scene.add(fPts);
+
+  // selection marker and wiring
+  const selGeo = new THREE.BufferGeometry();
+  selGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
+  selGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array([1, 1, 1]), 3));
+  const selPts = new THREE.Points(selGeo, ptsMat(0.7));
+  selPts.visible = false;
+  scene.add(selPts);
+  const wireMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending });
+  const wire = new THREE.LineSegments(new THREE.BufferGeometry(), wireMat);
+  scene.add(wire);
+
+  // layer labels
+  const labels = layers.map((layer, k) => {
+    if (L > 20 && k % 3 && k !== L - 1) return null;
+    const d = document.createElement("div"); d.className = "lbl"; d.textContent = "L" + layer; host.appendChild(d);
+    return { d, p: new THREE.Vector3(lx(layer), 0.4 + SHEET + 0.25, -SHEET / 2) };
+  }).filter(Boolean);
+  const tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true; host.appendChild(tip);
+
+  // picking
+  const ray = new THREE.Raycaster(); ray.params.Points.threshold = 0.14;
+  const mouse = new THREE.Vector2();
+  let down = null;
+  const hit = (ev) => {
+    const r = canvas.getBoundingClientRect();
+    mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(mouse, camera);
+    const h = ray.intersectObject(fPts)[0];
+    return h ? { n: NEURONS[h.index], x: ev.clientX - r.left, y: ev.clientY - r.top } : null;
+  };
+  canvas.addEventListener("pointerdown", (ev) => { down = [ev.clientX, ev.clientY]; });
+  canvas.addEventListener("pointermove", (ev) => {
+    const h = hit(ev);
+    if (h) { tip.hidden = false; tip.style.left = h.x + "px"; tip.style.top = h.y + "px"; tip.textContent = `${h.n.id} · ${kindText(h.n)}`; canvas.style.cursor = "pointer"; }
+    else { tip.hidden = true; canvas.style.cursor = "grab"; }
+  });
+  canvas.addEventListener("pointerleave", () => { tip.hidden = true; });
+  canvas.addEventListener("pointerup", (ev) => {
+    if (!down || Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 5) return;
+    const h = hit(ev);
+    if (h) selectNeuron(h.n.id);
+  });
+
+  const resize = () => {
+    const w = host.clientWidth, h = host.clientHeight;
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  };
+  new ResizeObserver(resize).observe(host);
+  resize();
+  const v = new THREE.Vector3();
+  const loop = () => {
+    controls.update();
+    renderer.render(scene, camera);
+    const w = host.clientWidth, h = host.clientHeight;
+    for (const lb of labels) {
+      v.copy(lb.p).project(camera);
+      const vis = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05;
+      lb.d.style.display = vis ? "block" : "none";
+      if (vis) { lb.d.style.left = ((v.x + 1) / 2) * w + "px"; lb.d.style.top = ((1 - v.y) / 2) * h + "px"; }
+    }
+    requestAnimationFrame(loop);
+  };
+  Object.assign(MAP, { ok: true, bg, bgGeo, fGeo, selGeo, selPts, wire, loop });
+  updateMap();
+  loop();
+}
+
+const HAS3D = typeof THREE !== "undefined";
+const SCAM_POS = HAS3D && hex("#ff5c7a"), SCAM_NEG = HAS3D && hex("#4fd1c5"), WHITE = HAS3D && hex("#ffffff");
+const LCOL = HAS3D ? ["en", "tw", "en-tw"].map((l) => hex(LANG[l].color)) : [];
+function langColor(prefIdx, spec, out) {
+  return out.copy(LCOL[prefIdx] || LCOL[0]).multiplyScalar(0.22 + 0.78 * Math.min(1, spec * 1.6));
+}
+function scamColor(z, out, zmax = 4) {
+  const t = Math.min(1, Math.abs(z) / zmax);
+  return out.copy(z >= 0 ? SCAM_POS : SCAM_NEG).multiplyScalar(0.08 + 0.92 * t);
+}
+function kindText(n) {
+  const k = { tw: "Twi-selective", en: "English-selective", scam: n.scam_z >= 0 ? "fires on scams" : "fires on ordinary requests" };
+  return n.kinds.map((x) => k[x] || x).join(", ");
+}
+function stepActivity() {
+  const e = EPS[state.lang];
+  return state.step != null && e.activity ? e.activity[state.step] || null : null;
+}
+function updateMap() {
+  if (!MAP.ok) return;
+  const c = new THREE.Color();
+  const bc = MAP.bgGeo.attributes.color;
+  const dim = stepActivity() ? 0.45 : 1;
+  MAP.bg.forEach((b, k) => {
+    if (state.color === "lang") langColor(b[2], b[3], c); else scamColor(b[4], c);
+    bc.setXYZ(k, c.r * dim, c.g * dim, c.b * dim);
+  });
+  bc.needsUpdate = true;
+  const act = stepActivity();
+  const amax = act ? Math.max(1e-9, ...Object.values(act).map((x) => Math.max(0, x))) : 1;
+  const fc = MAP.fGeo.attributes.color;
+  NEURONS.forEach((n, k) => {
+    const pi = ["en", "tw", "en-tw"].indexOf(n.pref);
+    if (state.color === "lang") langColor(pi < 0 ? 0 : pi, Math.max(n.spec, 0.45), c); else scamColor(n.scam_z, c);
+    if (act) {
+      const a = Math.max(0, act[n.id] || 0) / amax;
+      c.multiplyScalar(0.18 + 0.82 * a).lerp(WHITE, 0.6 * a * a);
+    }
+    fc.setXYZ(k, c.r, c.g, c.b);
+  });
+  fc.needsUpdate = true;
+  // selection + wiring
+  const n = NBYID[state.neuron];
+  MAP.selPts.visible = !!n;
+  if (n) {
+    MAP.selGeo.attributes.position.setXYZ(0, n._p.x, n._p.y, n._p.z);
+    MAP.selGeo.attributes.position.needsUpdate = true;
+    const pos = [], col = [];
+    const add = (other, w) => {
+      const o = NBYID[other]; if (!o) return;
+      const cc = hex(w >= 0 ? "#ffd25e" : "#ff6fc3").multiplyScalar(0.45 + 0.55 * Math.min(1, Math.abs(w) * 3));
+      pos.push(n._p.x, n._p.y, n._p.z, o._p.x, o._p.y, o._p.z);
+      col.push(cc.r, cc.g, cc.b, cc.r * 0.5, cc.g * 0.5, cc.b * 0.5);
+    };
+    (n.feeds || []).forEach((f) => add(f.to, f.w));
+    (n.fed_by || []).forEach((f) => add(f.from, f.w));
+    MAP.wire.geometry.dispose();
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
+    MAP.wire.geometry = g;
+  } else {
+    MAP.wire.geometry.dispose();
+    MAP.wire.geometry = new THREE.BufferGeometry();
+  }
+  document.getElementById("map-legend").innerHTML = state.color === "lang"
+    ? `<span style="color:${LANG.en.color}">● English</span> &nbsp;<span style="color:${LANG.tw.color}">● Twi</span> &nbsp;<span style="color:${LANG["en-tw"].color}">● mixed</span>`
+    : `<span style="color:#ff5c7a">● fires on scams</span> &nbsp;<span style="color:#4fd1c5">● fires on ordinary tasks</span>`;
+}
+
+/* ---------- active list + card ---------- */
+function renderActive() {
+  const box = document.getElementById("active");
+  if (!NEURONS.length) { box.innerHTML = ""; return; }
+  const act = stepActivity();
+  let title, list;
+  if (act) {
+    const s = EPS[state.lang].steps[state.step];
+    title = `Most active at step ${state.step} · ${tag(s.tag)[0].toLowerCase()}`;
+    list = Object.entries(act).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id, v]) => [id, `${fmt(v)}×`]);
+  } else {
+    title = "Strongest picks · tap a step to see what fires there";
+    list = [...NEURONS].sort((a, b) => Math.abs(b.scam_z) + 3 * b.spec - (Math.abs(a.scam_z) + 3 * a.spec)).slice(0, 10).map((n) => [n.id, kindShort(n)]);
+  }
+  box.innerHTML = `<span class="lab">${esc(title)}</span><div class="chips">${list.map(([id, v]) =>
+    `<button type="button" class="chip" data-n="${id}"><b>${id}</b> ${esc(v)}</button>`).join("") || '<span class="chip">none above zero</span>'}</div>`;
+  box.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", () => selectNeuron(b.dataset.n)));
+}
+function kindShort(n) { return n.kinds.map((k) => ({ tw: "Twi", en: "Eng", scam: n.scam_z >= 0 ? "scam" : "ordinary" })[k] || k).join("+"); }
+
+function selectNeuron(id) { state.neuron = state.neuron === id ? null : id; renderAll(); }
+
+function renderCard() {
+  const box = document.getElementById("card");
+  const n = NBYID[state.neuron];
+  document.getElementById("card-id").textContent = n ? n.id : "none selected";
+  if (!n) {
+    box.innerHTML = `<div class="empty"><p>Tap a bright point in the map or a neuron chip. Its card shows what it reads (language and scam preference), what it writes (logit and steer lenses), how it is wired, and where it fires in this episode.</p></div>`;
+    return;
+  }
+  const pmax = Math.max(1e-9, ...Object.values(n.p));
+  const bars = Object.entries(n.p).map(([l, v]) => `<div class="brow"><span>${LANG[l] ? LANG[l].name : l}</span><span class="track"><i class="fill" style="left:0;width:${(100 * v) / pmax}%;background:${LANG[l] ? LANG[l].color : "#aaa"}"></i></span><span class="val">${(100 * v).toFixed(1)}%</span></div>`).join("");
+  const zc = Math.max(-1, Math.min(1, n.scam_z / 4));
+  const scam = `<div class="brow"><span>scam vs ordinary</span><span class="div" style="height:8px"><i style="${zc >= 0 ? `left:50%;width:${50 * zc}%` : `left:${50 + 50 * zc}%;width:${-50 * zc}%`};background:${zc >= 0 ? "#ff5c7a" : "#4fd1c5"}"></i></span><span class="val">z ${fmt(n.scam_z, 1)}</span></div>`;
+  const toks = (arr, cls) => (arr || []).map((t) => `<span class="tok ${cls}">${esc(t)}</span>`).join("");
+  let steer = "";
+  if (n.steer) {
+    const fa = n.steer.first_action;
+    const m = Math.max(1e-9, ...["up", "down"].flatMap((k) => Object.values(fa[k]).map(Math.abs)));
+    const cell = (v) => { const t = Math.max(-1, Math.min(1, v / m)); return `<span class="div" title="${fmt(v)}"><i style="${t >= 0 ? `left:50%;width:${50 * t}%` : `left:${50 + 50 * t}%;width:${-50 * t}%`};background:${t >= 0 ? "#cfe8a8" : "#f0b3c9"}"></i></span>`; };
+    steer = `<div><span class="lab">Steer lens · ±${n.steer.dose}× typical max · Δ log-prob of first action</span>
+      <div class="steer" style="margin-top:8px"><span></span><span class="h">push +</span><span class="h">push −</span>
+      ${Object.keys(ACTION_LABEL).map((a) => `<span>${ACTION_LABEL[a]}</span>${cell(fa.up[a])}${cell(fa.down[a])}`).join("")}</div>
+      <div class="toks" style="margin-top:8px">${toks(n.steer.tokens.up, "up")}</div>
+      <div class="toks" style="margin-top:4px">${toks(n.steer.tokens.down, "down")}</div></div>`;
+  }
+  const wire = (list, key) => (list || []).map((f) => `<button type="button" data-n="${f[key]}"><span class="sw" style="background:${f.w >= 0 ? "#ffd25e" : "#ff6fc3"}"></span>${f[key]} <span style="color:var(--faint)">${fmt(f.w)}</span></button>`).join("") || '<span class="sub">none among mapped neurons</span>';
+  box.innerHTML = `
+    <div><h3>${n.id}</h3><div class="sub">${kindText(n)} · prefers ${LANG[n.pref] ? LANG[n.pref].name : n.pref} · specificity ${fmt(n.spec)}</div></div>
+    <div><span class="lab">Reads · active on the request's tokens</span><div class="bars" style="margin-top:8px">${bars}${scam}</div></div>
+    <div><span class="lab">Writes · logit lens</span><div class="toks" style="margin-top:8px">${toks(n.logit_up, "up")}</div><div class="toks" style="margin-top:4px">${toks(n.logit_down, "down")}</div></div>
+    ${steer}
+    <div><span class="lab">Wiring · <span style="color:#ffd25e">excites</span> / <span style="color:#ff6fc3">inhibits</span></span>
+      <div class="sub" style="margin:6px 0 4px">feeds →</div><div class="wire">${wire(n.feeds, "to")}</div>
+      <div class="sub" style="margin:8px 0 4px">fed by ←</div><div class="wire">${wire(n.fed_by, "from")}</div></div>
+    <div class="strip"><span class="lab">In this episode · ${LANG[state.lang].name} · one bar per step, tap to select</span><div id="strip" style="margin-top:8px"></div></div>`;
+  box.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", () => selectNeuron(b.dataset.n)));
+  renderStrip(n);
+}
+function renderStrip(n) {
+  const e = EPS[state.lang];
+  const host = document.getElementById("strip");
+  if (!e.activity || !Object.keys(e.activity).length) { host.innerHTML = '<span class="sub">Run anchor_episode.py with --neurons to see where it fires.</span>'; return; }
+  const vals = e.steps.map((s) => (e.activity[s.i] || {})[n.id] ?? 0);
+  const m = Math.max(1e-9, ...vals.map(Math.abs));
+  const W = 420, H = 64, bw = W / vals.length;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Activation of this neuron at each step" }, host);
+  svg("line", { x1: 0, x2: W, y1: H / 2, y2: H / 2, stroke: "#1c252b" }, root);
+  vals.forEach((v, k) => {
+    const h = (Math.abs(v) / m) * (H / 2 - 4);
+    const s = e.steps[k];
+    const r = svg("rect", { x: k * bw + 1, y: v >= 0 ? H / 2 - h : H / 2, width: Math.max(1, bw - 2), height: Math.max(0.5, h), fill: tag(s.tag)[1], opacity: state.step === s.i ? 1 : 0.75, rx: 1.5 }, root);
+    r.style.cursor = "pointer";
+    r.addEventListener("click", () => { state.step = s.i; renderAll(); scrollTrace(); });
+  });
+}
+
+/* ---------- controls ---------- */
+function wire() {
+  const group = (attr, key, parse = (x) => x) => document.querySelectorAll(`[data-${attr}]`).forEach((b) => b.addEventListener("click", () => {
+    state[key] = parse(b.dataset[attr]);
+    document.querySelectorAll(`[data-${attr}]`).forEach((o) => o.setAttribute("aria-pressed", o === b));
+    renderAll();
+  }));
+  group("size", "size"); group("links", "links", Number); group("color", "color");
+}
+function renderAll() { renderRings(); renderHarm(); renderTrace(); updateMap(); renderActive(); renderCard(); }
+
+if (DATA && LANGS.length) {
+  state.lang = LANGS.includes("tw") ? "tw" : LANGS[0];
+  const an = anchorOf(EPS[state.lang]);
+  if (an) {
+    state.step = an.i;
+    const act = EPS[state.lang].activity && EPS[state.lang].activity[an.i];
+    if (act) state.neuron = Object.entries(act).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  }
+  renderMeta(); renderLegend(); wire(); renderAll(); initMap();
+} else {
+  document.querySelector(".wrap").insertAdjacentHTML("afterbegin", '<p class="note">No data embedded. Build this page with scripts/build_anchor_page.py.</p>');
+}
+</script>

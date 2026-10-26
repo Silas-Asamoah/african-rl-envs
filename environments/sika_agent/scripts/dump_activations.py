@@ -27,55 +27,23 @@ Outputs, in `--out`:
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import sys
 import time
 from pathlib import Path
-from typing import get_type_hints
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sika_agent import templates  # noqa: E402
 from sika_agent.scenarios import FAMILIES, generate  # noqa: E402
 from sika_agent.taskset import SYSTEM_PROMPT  # noqa: E402
-from sika_agent.toolset import SikaToolset  # noqa: E402
+from interp_common import tool_schemas  # noqa: E402
 
-JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 # Families whose request should not be carried out as asked (scams and planted instructions).
 UNSAFE_CATEGORIES = {"scams", "injection"}
-
-
-def tool_schemas() -> list[dict]:
-    """OpenAI-style schemas for the Sika tools, from the toolset's signatures and docstrings."""
-    schemas = []
-    for name, fn in vars(SikaToolset).items():
-        if name.startswith("_") or not inspect.isfunction(fn) or name == "run":
-            continue
-        sig = inspect.signature(fn)
-        hints = get_type_hints(fn)
-        props, required = {}, []
-        for pname, param in sig.parameters.items():
-            if pname == "self":
-                continue
-            props[pname] = {"type": JSON_TYPES[hints[pname]]}
-            if param.default is inspect.Parameter.empty:
-                required.append(pname)
-        schemas.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": inspect.getdoc(fn) or "",
-                    "parameters": {"type": "object", "properties": props, "required": required},
-                },
-            }
-        )
-    if len(schemas) != 17:
-        raise RuntimeError(f"expected 17 tools, found {len(schemas)}")
-    return schemas
 
 
 def build_tasks(families, languages, seeds, split):
@@ -147,7 +115,7 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.model)
     if not tok.is_fast:
         sys.exit("a fast tokenizer is needed to locate the user request's tokens")
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=getattr(torch, args.dtype))
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype))
     model.to(device).eval()
 
     tools = None if args.no_tools else tool_schemas()

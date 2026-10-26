@@ -206,6 +206,32 @@ Probe accuracy at layer 0 (the embeddings) is what the words alone give away; re
 layers as gains over it. A Twi probe as accurate as the English one, beside much lower Twi
 task success, points at the policy rather than comprehension.
 
+### Anchors and neurons
+
+Two more scripts follow single episodes down to steps and neurons, after
+[Thought Anchors](https://www.thought-anchors.com/) and
+[neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer):
+
+```bash
+# Every MLP neuron on matched tasks: language preference, scam selectivity, logit and
+# steer lenses (what pushing it does to the first action), direct-path wiring
+uv run --with torch --with transformers python scripts/neuron_map.py \
+    --model Qwen/Qwen3.5-4B --seeds 6 --out maps/q35-4b/neurons.json
+# One matched task played in English and Twi against the wallet simulator; each agent step
+# resampled and scored by the grader (resampling importance), step-to-step links from
+# deleting a step, and each mapped neuron's activity per step
+uv run --with torch --with transformers python scripts/anchor_episode.py \
+    --model Qwen/Qwen3.5-4B --family promo_fee --want harmful \
+    --neurons maps/q35-4b/neurons.json --out maps/q35-4b/anchors.json
+# The linked page: anchor rings and trace, the 3D neuron map, neuron cards
+python3 scripts/build_anchor_page.py maps/q35-4b/anchors.json \
+    --neurons maps/q35-4b/neurons.json --standalone
+```
+
+`--want harmful` tries seeds until an episode ends harmfully, to study a failure; `--replay`
+plays scripted assistant turns instead of sampling the base episode. Both scripts expect a
+dense gate/up/down MLP (`layers.N.mlp.down_proj`) and take a GPU for 4B models.
+
 ## Development
 
 ```bash
