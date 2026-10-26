@@ -7,6 +7,7 @@
 #   bash research/sika_interp/remote/pod.sh serve ministral && bash .../pod.sh wait ministral
 #   bash research/sika_interp/remote/pod.sh eval qwen [vf-eval options, e.g. -n 60]
 #   bash research/sika_interp/remote/pod.sh study qwen      # the study's 800 episodes
+#   bash research/sika_interp/remote/pod.sh resume <run>    # re-run its missing rollouts
 #
 # Traces land in outputs/, server logs in logs/.
 set -euo pipefail
@@ -19,6 +20,9 @@ export PATH="$VENVS/vllm/bin:$HOME/.local/bin:/usr/local/cuda/bin:$PATH" CUDA_HO
 # Prime's H200 pods run a CUDA 12.4 driver, too old for vLLM's default CUDA 13 build.
 VLLM_WHEEL=https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl
 MINISTRAL=mistralai/Ministral-3-8B-Reasoning-2512
+# Share of GPU memory per server: 0.42 lets both models share one H200; one model alone can
+# take about 0.85 and keep twice as many conversations in flight.
+GPU_SHARE=${GPU_SHARE:-0.42}
 mkdir -p "$LOGS"
 log() { echo "[$(date +%T)] $*"; }
 port() { case "$1" in qwen) echo 8000 ;; ministral) echo 8002 ;; *) echo "unknown model $1" >&2; exit 2 ;; esac; }
@@ -39,13 +43,13 @@ serve)
   qwen)
     # Triton kernels for the linear-attention prefill, for the same reason.
     setsid nohup vllm serve Qwen/Qwen3.5-9B --port 8000 --max-model-len 32768 \
-      --gpu-memory-utilization 0.42 --language-model-only --gdn-prefill-backend triton \
+      --gpu-memory-utilization "$GPU_SHARE" --language-model-only --gdn-prefill-backend triton \
       --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder \
       > "$LOGS/qwen.log" 2>&1 < /dev/null &
     ;;
   ministral)
     setsid nohup vllm serve "$MINISTRAL" --port 8001 --max-model-len 32768 \
-      --gpu-memory-utilization 0.42 --tokenizer_mode mistral --config_format mistral --load_format mistral \
+      --gpu-memory-utilization "$GPU_SHARE" --tokenizer_mode mistral --config_format mistral --load_format mistral \
       --reasoning-parser mistral --enable-auto-tool-choice --tool-call-parser mistral \
       > "$LOGS/ministral.log" 2>&1 < /dev/null &
     # Mistral's reasoning prompt goes in front of the server via sika_interp.serving (port 8002).
@@ -77,6 +81,13 @@ eval)
   LOCAL_KEY=EMPTY "$VENVS/client/bin/vf-eval" sika-agent @ "$HERE/configs/$name.toml" \
     --no-push --no-rich -o "$ROOT/outputs" "$@" > "$logfile" 2>&1
   log "eval $name done, log $logfile"
+  ;;
+resume)
+  # Re-run a run's missing or errored rollouts, e.g. after restarting a server.
+  run=${2:?resume <run dir under outputs/>}
+  (setsid nohup env LOCAL_KEY=EMPTY "$VENVS/client/bin/vf-eval" @ "$ROOT/outputs/$run/configs/resolved/eval.json" \
+    --resume > "$LOGS/resume-$run-$(date +%H%M%S).log" 2>&1 < /dev/null &)
+  log "resuming $run"
   ;;
 study)
   # The study's episodes (sika_interp.tasks), in the background: the matched twins, and the
