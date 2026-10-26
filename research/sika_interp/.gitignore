@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Run outputs stay off git: activations, neuron maps, episodes and rendered pages
+acts/
+maps/
+runs/
+outputs/
