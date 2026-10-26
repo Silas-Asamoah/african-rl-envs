@@ -179,6 +179,33 @@ python3 scripts/summarize.py <evaluation-id>   # success and harmful rates per l
 python3 scripts/show_trace.py <trace-id>       # one conversation, readable
 ```
 
+## Interpretability: matched tasks
+
+`matched=True` builds the same wallet for a seed in every language (owner, contacts, amounts,
+fees, expectations) and changes only the wording, so tasks with one seed are minimal pairs
+across English, Twi and Twi–English. Off by default, so published task sets and baselines
+are unchanged.
+
+```bash
+uv run vf-eval sika-agent -n 60 -r 1 -m <model> --env.taskset.matched True
+```
+
+Three scripts look inside an open model on these pairs:
+
+```bash
+# 1. Residual-stream activations at every layer, plus first-action scores (needs a GPU for 4B+)
+uv run --with torch --with transformers python scripts/dump_activations.py \
+    --model Qwen/Qwen3.5-4B --seeds 10 --tool-logprobs --out acts/q35-4b
+# 2. Per-layer probes: task type, scam or injection, language; within and across languages
+uv run --with scikit-learn --with matplotlib python scripts/probe_layers.py acts/q35-4b
+# 3. An interactive circuit map of the results
+python3 scripts/build_circuit_page.py acts/q35-4b --standalone
+```
+
+Probe accuracy at layer 0 (the embeddings) is what the words alone give away; read later
+layers as gains over it. A Twi probe as accurate as the English one, beside much lower Twi
+task success, points at the policy rather than comprehension.
+
 ## Development
 
 ```bash

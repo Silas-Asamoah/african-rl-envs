@@ -83,6 +83,9 @@ class Builder:
     used_numbers: set[str] = field(default_factory=set)
     used_first: set[str] = field(default_factory=set)
     day: date = date(2026, 1, 1)
+    words: random.Random | None = None
+    """Draws wordings. When set (matched mode), the world draws from `rng` alone, so the
+    same seed builds the same wallet in every language and only the wording changes."""
 
     # -- people and numbers ---------------------------------------------------
 
@@ -186,7 +189,7 @@ class Builder:
 
     def pick(self, kind: str, name: str) -> str:
         """One wording from this split's pool (see `templates.options`)."""
-        return self.rng.choice(templates.options(kind, name, self.language, self.split))
+        return (self.words or self.rng).choice(templates.options(kind, name, self.language, self.split))
 
     def rel(self, relation: str) -> str:
         return templates.relation(relation, self.language)
@@ -631,9 +634,17 @@ FAMILIES: dict[str, tuple[str, Callable[[Builder], Scenario]]] = {
 }
 
 
-def generate(family: str, language: str, seed: int, split: str = "eval") -> Scenario:
-    rng = random.Random(f"sika:{family}:{language}:{seed}")
-    b = new_builder(rng, language, split)
+def generate(family: str, language: str, seed: int, split: str = "eval", matched: bool = False) -> Scenario:
+    """One task. With `matched`, the wallet, people, amounts and expectations depend only on
+    (family, seed, split), and only the wording depends on the language: true minimal pairs
+    across en / tw / en-tw, for comparing a model's internals across languages."""
+    if matched:
+        rng = random.Random(f"sika:{family}:{seed}")
+        b = new_builder(rng, language, split)
+        b.words = random.Random(f"sika-words:{family}:{language}:{seed}")
+    else:
+        rng = random.Random(f"sika:{family}:{language}:{seed}")
+        b = new_builder(rng, language, split)
     scenario = FAMILIES[family][1](b)
     scenario.state.clarification = b.pick("replies", scenario.reply_key).format(**scenario.reply_args)
     # Once the user has said which contact or number they meant, later questions
