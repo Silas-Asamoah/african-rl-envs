@@ -134,6 +134,130 @@ class Model:
         return results
 
 
+    def render_turn(self, messages: list[dict], tools: list[dict], response: dict):
+        """Token ids for the prompt alone and for the prompt followed by the model's own
+        response (reasoning and action), rendered by the chat template."""
+        from sika_interp.serving import for_ministral
+
+        full = messages + [dict(response, role="assistant")]
+        if self.reasoning_prompt:
+            # Mistral's tokenizer won't end on an assistant turn, so placeholders follow it.
+            # Attention is causal: they can't change activations up to the action.
+            calls = response.get("tool_calls") or []
+            full += [{"role": "tool", "tool_call_id": c["id"], "content": ""} for c in calls] or [
+                {"role": "user", "content": "."}
+            ]
+            full = for_ministral(full, self.reasoning_prompt)
+        else:
+            full = for_template(full)
+        enc = self.tok.apply_chat_template(full, tools=tools, return_dict=True, return_tensors="pt")
+        return self.render(messages, tools)[0].tolist(), enc["input_ids"][0].tolist()
+
+    @modal.method()
+    def read_points(self, run: str, episodes: list[dict]) -> list[dict]:
+        """Residual stream at every layer and MLP neurons at three points of each episode's
+        first turn: the end of the request, the last reasoning token, and the first token
+        of the action (tool call or reply). Saved as float16 to the volume under
+        acts/<run>/<model>/; returns the positions and checks for each episode."""
+        import numpy as np
+        import torch
+
+        close = "[/THINK]" if self.reasoning_prompt else "</think>"
+        rows = []
+        for ep in episodes:
+            prompt, full = self.render_turn(ep["messages"], ep["tools"], ep["response"])
+            row = {k: ep[k] for k in ("task_id", "family", "category", "language", "seed", "reward")}
+            row["prefix_ok"] = full[: len(prompt)] == prompt
+            pieces = [self.tok.decode([i]) for i in full[len(prompt) :]]
+            end = next((j for j, p in enumerate(pieces) if p.strip() == close), None)
+            after = (end + 1) if end is not None else 0
+            action = next((j for j in range(after, len(pieces)) if pieces[j].strip()), None)
+            points = {
+                "request_end": len(prompt) - 1,
+                "reasoning_end": len(prompt) + end - 1 if end else None,
+                "action_start": len(prompt) + action if action is not None else None,
+            }
+            row.update(points, tokens=len(full), reasoning_tokens=end or 0)
+            row["action_token"] = pieces[action] if action is not None else None
+            positions = [p if p is not None else points["request_end"] for p in points.values()]
+            ids = torch.tensor([full], device="cuda")
+            captured: dict[int, torch.Tensor] = {}
+
+            def keep(i):
+                def hook(module, args):
+                    captured[i] = args[0][0, positions].float().cpu()
+
+                return hook
+
+            handles = [layer.mlp.down_proj.register_forward_pre_hook(keep(i)) for i, layer in enumerate(self.layers)]
+            with torch.no_grad():
+                out = self.model(input_ids=ids, output_hidden_states=True)
+            for h in handles:
+                h.remove()
+            residual = torch.stack([h[0, positions].float().cpu() for h in out.hidden_states], dim=1)
+            mlp = torch.stack([captured[i] for i in range(len(self.layers))], dim=1)
+            path = Path("/cache/acts") / run / self.model_id.split("/")[-1] / (ep["task_id"].replace("/", "_") + ".npz")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                path,
+                residual=residual.numpy().astype(np.float16),
+                mlp=mlp.numpy().astype(np.float16),
+                points=np.array([p if p is not None else -1 for p in points.values()]),
+            )
+            rows.append(row)
+        cache.commit()
+        return rows
+
+
+def first_turns(paths: list[str]) -> dict[str, list[dict]]:
+    """Each episode's first turn, grouped by model, with what read_points needs."""
+    by_model: dict[str, list[dict]] = {}
+    for path in paths:
+        for trace in load(path):
+            ts = turns(trace)
+            if not ts or "outcome" not in trace.get("rewards", {}):
+                continue
+            data = trace["task"]["data"]
+            first = ts[0]
+            by_model.setdefault(trace["agent"]["config"]["model"], []).append(
+                {
+                    "task_id": first.task_id,
+                    "family": data["family"],
+                    "category": data["category"],
+                    "language": data["language"],
+                    "seed": data["seed"],
+                    "reward": trace["rewards"]["outcome"]["score"],
+                    "messages": first.messages,
+                    "tools": first.tools,
+                    "response": first.response,
+                }
+            )
+    return by_model
+
+
+@app.local_entrypoint()
+def read(traces: str, run: str, batch: int = 100):
+    """Record the three read points for every episode in `traces` (comma-separated
+    traces.jsonl paths), in batches of `batch` episodes per GPU container."""
+    jobs = []
+    for model, eps in first_turns(traces.split(",")).items():
+        for i in range(0, len(eps), batch):
+            jobs.append((model, Model(model_id=model).read_points.spawn(run, eps[i : i + batch])))
+    rows: list[dict] = []
+    for model, job in jobs:
+        rows += [dict(r, model=model) for r in job.get()]
+    out = Path(f"read-points-{run}.json")
+    out.write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+    for model in sorted({r["model"] for r in rows}):
+        mine = [r for r in rows if r["model"] == model]
+        print(
+            f"{model}: {len(mine)} episodes | prompt is a prefix: {sum(r['prefix_ok'] for r in mine)}"
+            f" | reasoning found: {sum(r['reasoning_end'] is not None for r in mine)}"
+            f" | action found: {sum(r['action_start'] is not None for r in mine)}"
+        )
+    print(f"details in {out}")
+
+
 @app.local_entrypoint()
 def main(traces: str):
     """`traces`: comma-separated vf-eval traces.jsonl paths."""
