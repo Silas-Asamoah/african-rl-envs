@@ -1,6 +1,6 @@
 """Gather the study's results into one compact JSON for the viewer page.
 
-    python -m sika_interp.viewer --runs <notes>/runs --out viewer-data.json
+    python -m sika_interp.viewer --runs <notes>/runs --out viewer-data.json [--page page.html]
 
 Reads the traces and the summaries the Modal jobs wrote (probes, cues, tokens, anchors, maps)
 from `--runs`, laid out as the study left them, and keeps only what the page draws. Missing
@@ -170,6 +170,17 @@ def neuron_map(maps: Path, key: str, background: int = 24000, seed: int = 0) -> 
     }
 
 
+def _clean(value):
+    """NaN and infinities as null: JSON has no NaN, and the page reads null as missing."""
+    if isinstance(value, float):
+        return value if value == value and abs(value) != float("inf") else None
+    if isinstance(value, dict):
+        return {k: _clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    return value
+
+
 def build(runs: Path) -> dict:
     data: dict = {"models": {}}
     data["words_alone"] = words_alone(runs)
@@ -204,10 +215,16 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--runs", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--page", type=Path, help="also write the viewer page with the data inlined")
     args = ap.parse_args()
     data = build(args.runs)
-    args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+    text = json.dumps(_clean(data), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    args.out.write_text(text)
     print(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.1f} MB)")
+    if args.page:
+        template = (Path(__file__).resolve().parent.parent / "viewer" / "template.html").read_text()
+        args.page.write_text(template.replace("/*DATA*/", text.replace("</", "<\\/")))
+        print(f"wrote {args.page}")
 
 
 if __name__ == "__main__":
