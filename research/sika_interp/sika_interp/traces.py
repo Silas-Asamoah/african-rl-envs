@@ -66,7 +66,8 @@ def turns(trace: dict) -> list[Turn]:
     nodes = trace["nodes"]
     messages = [chat_message(n["message"] if isinstance(n["message"], dict) else json.loads(n["message"])) for n in nodes]
     tools = [chat_tool(t) for t in nodes[0].get("tools") or trace.get("tools") or []]
-    usage = {c["node"]: c.get("usage", {}).get("prompt_tokens") for c in trace.get("calls", [])}
+    # A call the server rejected (e.g. a malformed tool call) produced no node.
+    usage = {c["node"]: c.get("usage", {}).get("prompt_tokens") for c in trace.get("calls", []) if "node" in c}
     out = []
     for i, node in enumerate(nodes):
         if node.get("sampled") in (True, "true"):

@@ -31,7 +31,11 @@ TRACE = {
         node({"role": "tool", "tool_call_id": "c1", "content": "GH₵1,248.85"}, parent=2),
         node({"role": "assistant", "content": "Mempɛ sɛ metua."}, parent=3, sampled=True),
     ],
-    "calls": [{"node": 2, "usage": {"prompt_tokens": 2161}}, {"node": 4, "usage": {"prompt_tokens": 2822}}],
+    "calls": [
+        {"node": 2, "usage": {"prompt_tokens": 2161}},
+        {"node": 4, "usage": {"prompt_tokens": 2822}},
+        {"error": {"type": "ProviderError", "message": "upstream 400: Function name was ..."}},
+    ],
 }
 
 
