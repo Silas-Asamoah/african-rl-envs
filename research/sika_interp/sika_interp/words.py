@@ -11,10 +11,11 @@ The evidence, in order:
    brand and "sika" is Twi for money): `other`;
 2. Twi prefixes or the "-i" ending around a hyphenated English stem: `mixed`;
 3. the Twi letters ɛ and ɔ: `tw`;
-4. the wording pools. A word used in the English pool is English, even where Twi wordings
-   borrow it ("fee", "PIN", "airtime"): those borrowings are the English islands this study
-   follows. A word only the Twi pool uses is Twi. The Twi–English pool is never consulted,
-   so the tags don't learn from the text they tag;
+4. the wording pools, plus the environment's own English (system prompt, tool
+   descriptions). A word used in that English is English, even where Twi wordings borrow it
+   ("fee", "PIN", "phone"): those borrowings are the English islands this study follows. A
+   word only the Twi pool uses is Twi. The Twi–English pool is never consulted, so the tags
+   don't learn from the text they tag;
 5. words spelled the same in both languages ("me", "a", "so", "no", "o") take the side of
    the nearest unambiguous words in their sentence when those agree, else the side the
    pools favour. "No" opening a sentence is English and before a pause is the Twi
@@ -25,6 +26,7 @@ These are heuristics: check a sample by ear before relying on them.
 
 from __future__ import annotations
 
+import inspect
 import math
 import re
 from collections import Counter
@@ -55,6 +57,8 @@ SENTENCE_END = (".", "!", "?")
 PLACEHOLDER = re.compile(r"\{[^}]*\}")
 MIN_ENGLISH = 2
 """Uses in the English pool that make a word English (one stray use doesn't)."""
+ENGLISH_SUFFIXES = ("s", "es", "ed", "ing")
+"""Endings that let an English stem vouch for a word ("fees" from "fee")."""
 
 
 @dataclass(frozen=True)
@@ -161,12 +165,22 @@ def _is_mixed(pieces: list[str]) -> bool:
 
 
 def _side(word: str) -> str | None:
-    """English if the English pool uses the word, Twi if only the Twi pool does."""
-    if _counts("en")[word] >= MIN_ENGLISH:
+    """English if the English evidence uses the word (or its stem: "fees", "contacts"),
+    Twi if only the Twi pool does."""
+    if _english(word) or any(word.endswith(x) and _english(word[: -len(x)]) for x in ENGLISH_SUFFIXES):
         return "en"
     if _counts("tw")[word]:
         return "tw"
     return "en" if _counts("en")[word] else None
+
+
+def _english(word: str) -> bool:
+    return _counts("en")[word] >= MIN_ENGLISH or word in _instruction_words()
+
+
+@cache
+def _instruction_words() -> frozenset[str]:
+    return frozenset(w.strip(EDGE).lower() for w in PLACEHOLDER.sub(" ", _instructions()).split())
 
 
 def _lean(word: str) -> float:
@@ -178,20 +192,43 @@ def _lean(word: str) -> float:
 @cache
 def _counts(language: str) -> Counter[str]:
     """Word counts over every wording in one language, both splits, with placeholders and
-    brand names removed."""
+    brand names removed. English also counts the environment's own English text (system
+    prompt and tool descriptions), which Twi wordings borrow from ("phone", "contacts")."""
     assert language in ("en", "tw"), "the Twi–English pool is what gets tagged"
+    texts = [
+        text
+        for kind, table in (
+            ("requests", templates.REQUESTS),
+            ("replies", templates.REPLIES),
+            ("injections", templates.INJECTIONS),
+        )
+        for name in table
+        for split in templates.SPLITS
+        for text in templates.options(kind, name, language, split)
+    ]
+    if language == "en":
+        texts.append(_instructions())  # also authoritative on its own: see _instruction_words
     counts: Counter[str] = Counter()
-    for kind, table in (
-        ("requests", templates.REQUESTS),
-        ("replies", templates.REPLIES),
-        ("injections", templates.INJECTIONS),
-    ):
-        for name in table:
-            for split in templates.SPLITS:
-                for text in templates.options(kind, name, language, split):
-                    for brand in BRANDS:
-                        text = text.replace(brand, " ")
-                    words = (w.strip(EDGE).lower() for w in PLACEHOLDER.sub(" ", text).split())
-                    counts.update(w for w in words if w)
-    counts.update(rel[language].lower() for rel in templates.RELATIONS.values())
+    for text in texts:
+        for brand in BRANDS:
+            text = text.replace(brand, " ")
+        words = (w.strip(EDGE).lower() for w in PLACEHOLDER.sub(" ", text).split())
+        counts.update(w for w in words if w)
+    weight = MIN_ENGLISH if language == "en" else 1
+    for rel in templates.RELATIONS.values():
+        counts[rel[language].lower()] += weight
     return counts
+
+
+def _instructions() -> str:
+    """The English the environment itself shows agents: its system prompt and the
+    descriptions of its tools."""
+    from sika_agent import wallet
+    from sika_agent.taskset import SYSTEM_PROMPT
+
+    tools = [
+        inspect.getdoc(f) or ""
+        for _, f in inspect.getmembers(wallet, inspect.isfunction)
+        if f.__module__ == wallet.__name__ and next(iter(inspect.signature(f).parameters), "") == "s"
+    ]
+    return "\n".join([SYSTEM_PROMPT, *tools])

@@ -54,6 +54,12 @@ def test_english_compounds_stay_english(word):
     assert tags(word)[word] == "en"
 
 
+@pytest.mark.parametrize("word", ["phone", "contacts", "fees", "auntie"])
+def test_english_the_environment_uses_is_english(word):
+    """Twi wordings borrow these; the system prompt and tool descriptions vouch for them."""
+    assert tags(f"Let me check the {word} first.")[word] == "en"
+
+
 def test_sika_is_money_unless_it_is_the_brand():
     assert tags("fa sika no")["sika"] == "tw"
     assert tags("Sika Wallet")["Sika"] == "other"
