@@ -20,7 +20,11 @@ TRACE = {
         node({"role": "system", "content": "You are Sika."}, tools=[TOOL]),
         node({"role": "user", "content": "Ei, m'a-win-i Sika Wallet promo no!"}, parent=0),
         node(
-            {"role": "assistant", "reasoning_content": "Scam?", "tool_calls": [{"id": "c1"}]},
+            {
+                "role": "assistant",
+                "reasoning_content": "Scam?",
+                "tool_calls": [{"id": "c1", "type": "function", "name": "check_balance", "arguments": "{}"}],
+            },
             parent=1,
             sampled=True,
         ),
@@ -45,6 +49,9 @@ def test_each_model_turn_gets_the_request_that_produced_it():
     assert [m["role"] for m in first.messages] == ["system", "user"]
     assert first.response["reasoning_content"] == "Scam?"
     assert [m["role"] for m in second.messages] == ["system", "user", "assistant", "tool"]
+    assert second.messages[2]["tool_calls"] == [
+        {"id": "c1", "type": "function", "function": {"name": "check_balance", "arguments": "{}"}}
+    ]
     assert second.response["content"] == "Mempɛ sɛ metua."
     assert (first.prompt_tokens, second.prompt_tokens) == (2161, 2822)
     assert first.tools == [chat_tool(TOOL)]

@@ -1,9 +1,10 @@
 """Read verifiers eval traces back into the chat requests a model saw.
 
-An episode trace stores its conversation as linked nodes and its tools in the flat
-Responses-style shape. The model was sent Chat Completions requests, with tools nested under
-"function", and the two shapes render to different prompt tokens. `turns` rebuilds each
-request exactly, so the internal-measurement jobs can replay an episode turn by turn.
+An episode trace stores its conversation as linked nodes, with tools and assistant tool calls
+in the flat Responses-style shape. The model was sent Chat Completions requests, with both
+nested under "function", and the two shapes render to different prompt tokens. `turns`
+rebuilds each request exactly, so the internal-measurement jobs can replay an episode turn
+by turn.
 """
 
 import json
@@ -36,6 +37,22 @@ def chat_tool(tool: dict) -> dict:
     return {"type": "function", "function": fields}
 
 
+def chat_message(message: dict) -> dict:
+    """A trace message as it was sent: assistant tool calls nested under "function"."""
+    if not message.get("tool_calls"):
+        return message
+    calls = []
+    for call in message["tool_calls"]:
+        if "function" not in call:
+            call = {
+                "id": call.get("id"),
+                "type": call.get("type", "function"),
+                "function": {"name": call["name"], "arguments": call.get("arguments", "{}")},
+            }
+        calls.append(call)
+    return dict(message, tool_calls=calls)
+
+
 def load(path: str | Path) -> Iterator[dict]:
     """The episode traces in a vf-eval `traces.jsonl` (one per rollout)."""
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -47,7 +64,7 @@ def turns(trace: dict) -> list[Turn]:
     """Every model turn of an episode, with the request that produced it."""
     data = trace["task"]["data"]
     nodes = trace["nodes"]
-    messages = [n["message"] if isinstance(n["message"], dict) else json.loads(n["message"]) for n in nodes]
+    messages = [chat_message(n["message"] if isinstance(n["message"], dict) else json.loads(n["message"])) for n in nodes]
     tools = [chat_tool(t) for t in nodes[0].get("tools") or trace.get("tools") or []]
     usage = {c["node"]: c.get("usage", {}).get("prompt_tokens") for c in trace.get("calls", [])}
     out = []
