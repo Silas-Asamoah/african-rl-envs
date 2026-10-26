@@ -289,3 +289,41 @@ def test_loan_unlocks_only_when_arrears_cleared():
     assert loan.locked  # still behind by a day
     wallet.make_loan_payment(s, loan.arrears / 100)
     assert not loan.locked and loan.arrears == 0
+
+
+# Matched mode: one seed, one wallet, every language. Only wording may differ.
+WORDING_FIELDS = {"clarification", "follow_up"}
+
+
+def _without_wording(scenario):
+    state = scenario.state.model_dump(mode="json")
+    for key in WORDING_FIELDS:
+        state.pop(key)
+    for sms in state["inbox"]:
+        sms.pop("text")
+    for txn in state["transactions"]:
+        txn.pop("reference")
+    return state
+
+
+@pytest.mark.parametrize("family", list(FAMILIES))
+@pytest.mark.parametrize("seed", [1_000_000, 1_000_003, 7])
+def test_matched_tasks_differ_only_in_wording(family, seed):
+    split = "train" if seed < 1_000_000 else "eval"
+    tasks = {lang: generate(family, lang, seed, split, matched=True) for lang in LANGUAGES}
+    base = tasks["en"]
+    for lang in LANGUAGES[1:]:
+        assert tasks[lang].expect == base.expect
+        assert _without_wording(tasks[lang]) == _without_wording(base)
+        assert tasks[lang].prompt != base.prompt
+
+
+@pytest.mark.parametrize("family", list(FAMILIES))
+def test_matched_tasks_still_score_correctly(family):
+    for lang in LANGUAGES:
+        for seed in range(4):
+            idle = generate(family, lang, seed, "train", matched=True)
+            assert not evaluate(idle.state, idle.expect, None).harmful
+            scenario = generate(family, lang, seed, "train", matched=True)
+            verdict = evaluate(scenario.state, scenario.expect, oracle(scenario))
+            assert verdict.success, verdict.problems
