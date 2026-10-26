@@ -251,6 +251,75 @@ def analyse(run: str, model: str, point: str, question: str, categories: dict[st
     return out
 
 
+@app.function(volumes={"/cache": cache}, cpu=8, memory=32768, timeout=7200)
+def episode_scores(run: str, model: str, point: str, categories: dict[str, str]) -> dict:
+    """Per episode at one read point, every layer: the scam-or-injection probability from a
+    probe trained on English episodes of other seeds, and (Twi–English with both twins) how
+    much nearer the English twin than the Twi twin it sits."""
+    import numpy as np
+
+    from sika_interp import probes
+
+    X, family, language, seed = probes.load(Path("/cache/acts") / run / model.split("/")[-1], point)
+    threat = np.array([categories[f] in THREATS for f in family])
+    scores = np.stack([probes.held_out_scores(X[:, layer], threat, language, seed) for layer in range(X.shape[1])], 1)
+    margins: dict[int, list[float]] = {}
+    for layer in range(X.shape[1]):
+        for i, m in probes.placement_margins(X[:, layer], family, seed, language).items():
+            margins.setdefault(i, []).append(m)
+    return {
+        "episodes": [
+            {
+                "family": str(family[i]),
+                "language": str(language[i]),
+                "seed": int(seed[i]),
+                "threat_score": [round(float(v), 4) for v in scores[i]],
+                "margin": [round(v, 4) for v in margins[i]] if i in margins else None,
+            }
+            for i in range(len(family))
+        ]
+    }
+
+
+@app.local_entrypoint()
+def link(run: str, model: str, points: str):
+    """Tie the inside to behaviour for one model: per read point, the English-trained scam
+    probe's score on scam and injection episodes by outcome and language, and Twi–English
+    placement by outcome. `points`: the read-points JSON from `read` (outcomes, categories)."""
+    rows = json.loads(Path(points).read_text())
+    categories = {r["family"]: r["category"] for r in rows}
+    reward = {(r["family"], r["language"], r["seed"]): r["reward"] for r in rows}
+    calls = {point: episode_scores.spawn(run, model, point, categories) for point in POINTS}
+    res = {point: call.get() for point, call in calls.items()}
+    out = Path(f"link-{run}-{model.split('/')[-1]}.json")
+    out.write_text(json.dumps(res))
+    outcome = {1.0: "success", 0.0: "miss", -1.0: "harmful"}
+
+    def mean(xs: list[float]) -> str:
+        return f"{sum(xs) / len(xs):.2f} (n={len(xs)})" if xs else "-"
+
+    for point, r in res.items():
+        eps = [dict(e, reward=reward[(e["family"], e["language"], e["seed"])]) for e in r["episodes"]]
+        layers = len(eps[0]["threat_score"])
+        print(f"== {point}")
+        for layer in range(4, layers, 4):
+            line = []
+            for lang in ("en", "tw", "en-tw"):
+                threats = [e for e in eps if e["language"] == lang and categories[e["family"]] in THREATS]
+                by = " ".join(
+                    f"{outcome[k][:4]} {mean([e['threat_score'][layer] for e in threats if e['reward'] == k])}"
+                    for k in (1.0, -1.0)
+                )
+                line.append(f"{lang}: {by}")
+            print(f"  L{layer:<2} scam score on scam/injection tasks | " + " | ".join(line))
+        for layer in range(4, layers, 4):
+            mixed = [e for e in eps if e["margin"]]
+            ok = [e["margin"][layer] for e in mixed if e["reward"] == 1.0]
+            bad = [e["margin"][layer] for e in mixed if e["reward"] != 1.0]
+            print(f"  L{layer:<2} en-tw nearer English twin (margin): success {mean(ok)} | fail {mean(bad)}")
+    print(f"saved {out}")
+
+
 @app.local_entrypoint()
 def probe(run: str, model: str, points: str, matched_below: int = 1_000_010):
     """Run every `analyse` question on every read point of one model, in parallel, and save
