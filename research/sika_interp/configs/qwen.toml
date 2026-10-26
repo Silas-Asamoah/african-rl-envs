@@ -1,0 +1,22 @@
+# vf-eval config for Qwen3.5-9B served by remote/pod.sh. Sampling is Qwen's recommended
+# thinking-mode setting for general tasks.
+model = "Qwen/Qwen3.5-9B"
+
+[client]
+base_url = "http://localhost:8000/v1"
+api_key_var = "LOCAL_KEY"
+
+[sampling]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+max_tokens = 16384
+
+[env.taskset]
+matched = true
+
+# The harness is a plain tool-calling loop, so it runs on the pod rather than in a sandbox.
+[env.agent.runtime]
+type = "subprocess"
