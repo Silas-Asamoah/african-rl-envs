@@ -92,16 +92,23 @@ resume)
 study)
   # The study's episodes (sika_interp.tasks), in the background: the matched twins, and the
   # extra Twi–English seeds selected by task id.
-  name=${2:?study qwen|ministral [matched|extra]}
+  name=${2:?study qwen|ministral [matched|extra|more]}
   part=${3:-both}
-  if [ "$part" != extra ]; then
+  if [ "$part" = both ] || [ "$part" = matched ]; then
     (setsid nohup bash "$0" eval "$name" --run.dir "study-matched-$name" < /dev/null > /dev/null 2>&1 &)
   fi
-  if [ "$part" != matched ]; then
+  if [ "$part" = both ] || [ "$part" = extra ]; then
     ids=$(cd "$HERE" && "$VENVS/client/bin/python" -c \
       "import json; from sika_interp.tasks import extra_en_tw_tasks; print(json.dumps([t.data.id for t in extra_en_tw_tasks()]))")
     (setsid nohup bash "$0" eval "$name" --env.taskset.tasks_per_combo 20 --select.include.ids "$ids" \
       --run.dir "study-extra-entw-$name" < /dev/null > /dev/null 2>&1 &)
+  fi
+  if [ "$part" = more ]; then
+    # Twins for the extra Twi–English seeds and all languages for later seeds (tasks.more_twin_tasks).
+    ids=$(cd "$HERE" && "$VENVS/client/bin/python" -c \
+      "import json; from sika_interp.tasks import more_twin_tasks; print(json.dumps([t.data.id for t in more_twin_tasks()]))")
+    (setsid nohup bash "$0" eval "$name" --env.taskset.tasks_per_combo 30 --select.include.ids "$ids" \
+      --run.dir "study-more-twins-$name" < /dev/null > /dev/null 2>&1 &)
   fi
   log "study $name ($part) started"
   ;;

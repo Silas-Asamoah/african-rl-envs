@@ -14,6 +14,9 @@ MATCHED_SEEDS = 10
 """Seeds per family, each played in all three languages."""
 EXTRA_EN_TW_SEEDS = 10
 """More seeds per family in Twi–English alone, for switch-point and cue-moving work."""
+MORE_TWIN_SEEDS = 20
+"""Seeds added after checkpoint 1 so more Twi–English episodes have both twins: the extra
+Twi–English seeds gain English and Twi twins, and new seeds come in all three languages."""
 SEED_BASE = {"train": 0, "eval": 1_000_000}
 """Where the taskset starts counting seeds for each split."""
 
@@ -46,6 +49,19 @@ def extra_en_tw_tasks(
 def study_tasks(families: list[str] | None = None, split: str = "eval") -> list[SikaTask]:
     """The full set: matched twins, then the extra Twi–English seeds."""
     return matched_tasks(families=families, split=split) + extra_en_tw_tasks(families=families, split=split)
+
+
+def more_twin_tasks(families: list[str] | None = None, split: str = "eval") -> list[SikaTask]:
+    """English and Twi twins for the extra Twi–English seeds, plus every language for the
+    seeds after them, up to MATCHED_SEEDS + MORE_TWIN_SEEDS. With the study set, every seed
+    below that has all three languages."""
+    first, extra_end = SEED_BASE[split] + MATCHED_SEEDS, SEED_BASE[split] + MATCHED_SEEDS + EXTRA_EN_TW_SEEDS
+    tasks = _load(split, MATCHED_SEEDS + MORE_TWIN_SEEDS, list(LANGUAGES), families)
+    return [
+        t
+        for t in tasks
+        if t.data.seed >= first and not (t.data.seed < extra_end and t.data.language == "en-tw")
+    ]
 
 
 def twins(tasks: list[SikaTask]) -> dict[tuple[str, int], dict[str, SikaTask]]:

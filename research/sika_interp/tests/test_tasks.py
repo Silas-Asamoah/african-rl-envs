@@ -4,9 +4,11 @@ from sika_interp.tasks import (
     EXTRA_EN_TW_SEEDS,
     LANGUAGES,
     MATCHED_SEEDS,
+    MORE_TWIN_SEEDS,
     SEED_BASE,
     extra_en_tw_tasks,
     matched_tasks,
+    more_twin_tasks,
     study_tasks,
     twins,
 )
@@ -49,3 +51,14 @@ def test_extra_seeds_match_a_longer_matched_run():
 def test_study_set_size():
     per_family = MATCHED_SEEDS * len(LANGUAGES) + EXTRA_EN_TW_SEEDS
     assert len(study_tasks()) == per_family * len(FAMILIES)
+
+
+def test_more_twins_complete_every_seed_without_repeating_extra_episodes():
+    more = more_twin_tasks()
+    assert len({t.data.id for t in more}) == len(more)
+    assert not {t.data.id for t in more} & {t.data.id for t in study_tasks()}
+    groups = twins(study_tasks() + more)
+    last = SEED_BASE["eval"] + MATCHED_SEEDS + MORE_TWIN_SEEDS
+    assert {seed for _, seed in groups} == set(range(SEED_BASE["eval"], last))
+    assert all(set(g) == set(LANGUAGES) for g in groups.values())
+    assert len(more) == len(FAMILIES) * (2 * EXTRA_EN_TW_SEEDS + 3 * (MORE_TWIN_SEEDS - EXTRA_EN_TW_SEEDS))
