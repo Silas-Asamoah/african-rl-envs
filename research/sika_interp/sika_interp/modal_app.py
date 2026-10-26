@@ -308,6 +308,178 @@ class Model:
         return rows
 
 
+    @modal.method()
+    def masked_scores(self, run: str, categories: dict[str, str], episodes: list[dict], seed: int = 0) -> list[dict]:
+        """The English-trained scam probe's score at the end of the request, every layer, for
+        each request as written and with its English words, its Twi words, or as many random
+        words as it has English words masked. The probe is trained here on this run's English
+        request_end arrays (scam and injection tasks against the rest)."""
+        import random
+
+        import numpy as np
+        import torch
+
+        from sika_interp import probes
+        from sika_interp.switching import MASK, masked
+        from sika_interp.words import tag
+
+        X, family, language, _ = probes.load(Path("/cache/acts") / run / self.model_id.split("/")[-1], "request_end")
+        threat = np.array([categories[f] in THREATS for f in family])
+        en = language == "en"
+        fitted = [probes.probe().fit(X[en, j].astype(np.float64), threat[en]) for j in range(X.shape[1])]
+        rng = random.Random(seed)
+        rows = []
+        for ep in episodes:
+            text = ep["messages"][-1]["content"]
+            words = tag(text)
+            n_en = sum(w.tag == "en" for w in words)
+            pick = {w.start for w in rng.sample(words, min(n_en, len(words)))}
+            pieces, at = [], 0
+            for w in words:
+                pieces += [text[at : w.start], MASK if w.start in pick else w.text]
+                at = w.end
+            variants = {
+                "as_written": text,
+                "no_english": masked(text, {"en"}),
+                "no_twi": masked(text, {"tw"}),
+                "random": "".join(pieces) + text[at:],
+            }
+            scores = {}
+            for name, variant in variants.items():
+                messages = ep["messages"][:-1] + [dict(ep["messages"][-1], content=variant)]
+                with torch.no_grad():
+                    hidden = self.model(input_ids=self.render(messages, ep["tools"]), output_hidden_states=True).hidden_states
+                states = np.stack([h[0, -1].float().cpu().numpy() for h in hidden]).astype(np.float64)
+                scores[name] = [
+                    round(float(fitted[j].predict_proba(states[j : j + 1])[0, list(fitted[j].classes_).index(True)]), 4)
+                    for j in range(len(fitted))
+                ]
+            rows.append(
+                {
+                    "task_id": ep["task_id"],
+                    "family": ep["family"],
+                    "language": ep["language"],
+                    "threat": categories[ep["family"]] in THREATS,
+                    "reward": ep["reward"],
+                    "english_words": n_en,
+                    "twi_words": sum(w.tag == "tw" for w in words),
+                    "scores": scores,
+                }
+            )
+        return rows
+
+
+    def decision_prefix(self, d: dict) -> tuple[list[int], dict[str, int]]:
+        """Token ids up to where the model names a tool at decision `d` (its own reasoning
+        kept, a tool call opened), and the first token of each tool name in that place."""
+        placeholder = "zzplaceholderzz"
+
+        def ids_with(name: str) -> list[int]:
+            call = {"id": "call_0", "type": "function", "function": {"name": name, "arguments": "{}"}}
+            response = {"reasoning_content": d["response"].get("reasoning_content") or "", "tool_calls": [call]}
+            return self.render_turn(d["messages"], d["tools"], response)[1]
+
+        base = ids_with(placeholder)
+        at = self.tok.decode(base).rfind(placeholder)  # where the tool name begins, in characters
+
+        def first_reaching(chars: int) -> int:
+            lo, hi = 0, len(base)  # first k with decode(base[:k+1]) longer than `chars`
+            while lo < hi:
+                mid = (lo + hi) // 2
+                lo, hi = (lo, mid) if len(self.tok.decode(base[: mid + 1])) > chars else (mid + 1, hi)
+            return lo
+
+        cut = first_reaching(at)
+        prefix = base[:cut]
+        firsts = {}
+        for name in PAY + PROTECT:
+            other = ids_with(name)
+            if other[:cut] == prefix:
+                firsts[name] = other[cut]
+        return prefix, firsts
+
+    @modal.method()
+    def steer(self, decisions: list[dict], neurons: list[list[int]], controls: int, dose: float = 0.8, seed: int = 0) -> dict:
+        """Steer lens at decision points. For each decision, the model's pay-versus-protect
+        margin (log-sum-exp of the logits of paying tools' first tokens minus protecting
+        tools') when naming a tool, unsteered and with one push added at that position:
+        each listed neuron's output direction, and `controls` random directions per layer
+        used, at ±`dose` × the residual norm leaving the layer there. The prefix runs once;
+        each push reuses a copy of its cache."""
+        import copy
+
+        import numpy as np
+        import torch
+
+        rng = np.random.default_rng(seed)
+        used = sorted({layer for layer, _ in neurons})
+        width = self.model.config.get_text_config().hidden_size
+        directions = {
+            ("neuron", layer, i): self.layers[layer].mlp.down_proj.weight[:, i].float()
+            for layer, i in neurons
+        }
+        for layer in used:
+            for c in range(controls):
+                v = torch.tensor(rng.standard_normal(width), dtype=torch.float32)
+                directions[("control", layer, c)] = v
+        directions = {k: (v / v.norm()).to("cuda") for k, v in directions.items()}
+        results = {"decisions": [], "effects": {}}
+        for d in decisions:
+            prefix, firsts = self.decision_prefix(d)
+            pay = sorted({firsts[n] for n in PAY if n in firsts})
+            protect = sorted({firsts[n] for n in PROTECT if n in firsts} - set(pay))
+            if not pay or not protect:
+                results.setdefault("skipped", []).append(
+                    {"task_id": d["task_id"], "firsts": firsts, "tail": self.tok.decode(prefix[-12:])}
+                )
+                continue
+            norms: dict[int, float] = {}
+
+            def measure(i):
+                def hook(module, args, output):
+                    hidden = output[0] if isinstance(output, tuple) else output
+                    norms[i] = float(hidden[0, -1].float().norm())
+
+                return hook
+
+            with torch.no_grad():
+                cache = self.model(input_ids=torch.tensor([prefix[:-1]], device="cuda"), use_cache=True).past_key_values
+                last = torch.tensor([[prefix[-1]]], device="cuda")
+
+                def margin(push=None):
+                    handle = None
+                    if push is not None:
+                        layer, vec = push
+
+                        def add(module, args, output):
+                            if isinstance(output, tuple):
+                                return (output[0] + vec.to(output[0].dtype),) + tuple(output[1:])
+                            return output + vec.to(output.dtype)
+
+                        handle = self.layers[layer].register_forward_hook(add)
+                    logits = self.model(input_ids=last, past_key_values=copy.deepcopy(cache), use_cache=True).logits[0, -1].float()
+                    if handle:
+                        handle.remove()
+                    return float(torch.logsumexp(logits[pay], 0) - torch.logsumexp(logits[protect], 0))
+
+                # The unsteered pass also records each used layer's residual norm at this position.
+                handles = [self.layers[layer].register_forward_hook(measure(layer)) for layer in used]
+                base = margin()
+                for h in handles:
+                    h.remove()
+                for key, vec in directions.items():
+                    _, layer, _ = key
+                    for sign in (-1, 1):
+                        delta = margin((layer, sign * dose * norms[layer] * vec)) - base
+                        results["effects"].setdefault(f"{key[0]}:{layer}:{key[2]}:{sign:+d}", []).append(round(delta, 4))
+            results["decisions"].append({k: d[k] for k in ("task_id", "language", "index")} | {"margin": round(base, 4)})
+        return results
+
+
+PAY = ("initiate_transfer", "confirm_transfer")
+"""Tools that move money to a person: the harmful choice at a scam decision point."""
+PROTECT = ("report_fraud", "ask_user", "cancel_transfer")
+"""Tools that protect the user at a scam decision point."""
 THREATS = ("scams", "injection")
 """Categories where the right move is to refuse: the target of the threat probe."""
 
@@ -589,6 +761,73 @@ def tokens(traces: str, run: str, batch: int = 100):
         print("  state jump at switch points: " + " ".join(f"{x:.3f}" for x in res["jump"]["switch"]))
         print("  state jump elsewhere:        " + " ".join(f"{x:.3f}" for x in res["jump"]["other"]))
         print(f"  saved {out}")
+
+
+@app.local_entrypoint()
+def cues(traces: str, run: str, points: str, controls: int = 60, batch: int = 40):
+    """Which words carry the scam cue in Twi–English requests: `masked_scores` on every
+    Twi–English scam or injection request in `traces`, plus `controls` other requests as a
+    false-alarm check. `points`: the read-points JSON from `read` (categories)."""
+    categories = {r["family"]: r["category"] for r in json.loads(Path(points).read_text())}
+    jobs = []
+    for model, eps in first_turns(traces.split(",")).items():
+        mixed = [e for e in eps if e["language"] == "en-tw"]
+        chosen = [e for e in mixed if categories[e["family"]] in THREATS]
+        chosen += [e for e in mixed if categories[e["family"]] not in THREATS][:controls]
+        for i in range(0, len(chosen), batch):
+            jobs.append((model, Model(model_id=model).masked_scores.spawn(run, categories, chosen[i : i + batch])))
+    rows: dict[str, list[dict]] = {}
+    for model, job in jobs:
+        rows.setdefault(model, []).extend(job.get())
+    for model, mine in rows.items():
+        out = Path(f"cues-{run}-{model.split('/')[-1]}.json")
+        out.write_text(json.dumps(mine))
+        layers = len(mine[0]["scores"]["as_written"])
+        print(f"{model}: {len(mine)} requests  (scam score = English-trained probe at the end of the request)")
+        for threat in (True, False):
+            group = [r for r in mine if r["threat"] == threat]
+            print(f"  {'scam/injection' if threat else 'other (control)'} n={len(group)}")
+            for variant in ("as_written", "no_english", "no_twi", "random"):
+                means = [sum(r["scores"][variant][j] for r in group) / len(group) for j in range(4, layers, 4)]
+                print(f"    {variant:11} " + " ".join(f"{m:.2f}" for m in means))
+        print(f"  saved {out}")
+
+
+def decision_points(paths: list[str], per_language: int, families: tuple[str, ...] = ()) -> dict[str, list[dict]]:
+    """Scam-task turns that follow the user's answer (a later user message, or an ask_user
+    result), grouped by model: up to `per_language` per language, spread over episodes."""
+    by_model: dict[str, list[dict]] = {}
+    for path in paths:
+        for trace in load(path):
+            data = trace["task"]["data"]
+            if families and data["family"] not in families:
+                continue
+            for t in turns(trace):
+                prev = t.messages[-1]
+                if (prev["role"] == "user" and len(t.messages) > 2) or (prev["role"] == "tool" and prev.get("name") == "ask_user"):
+                    by_model.setdefault(trace["agent"]["config"]["model"], []).append(
+                        {"task_id": t.task_id, "language": t.language, "index": t.index, "family": data["family"],
+                         "messages": t.messages, "tools": t.tools, "response": t.response}
+                    )
+                    break  # the first decision of each episode
+    return {
+        model: [d for lang in ("en", "tw", "en-tw") for d in [x for x in ds if x["language"] == lang][:per_language]]
+        for model, ds in by_model.items()
+    }
+
+
+SCAM_FAMILIES = ("fake_refund", "pin_request", "promo_fee", "lender_impersonation")
+
+
+@app.local_entrypoint()
+def steer_test(traces: str, neurons: str = "16:5,20:7", controls: int = 4):
+    """A small steer-lens run on the decision points in `traces`, for checking the harness."""
+    picked = [[int(a) for a in n.split(":")] for n in neurons.split(",")]
+    for model, ds in decision_points(traces.split(","), per_language=2, families=SCAM_FAMILIES).items():
+        res = Model(model_id=model).steer.remote(ds, picked, controls)
+        print(model, "decisions:", res["decisions"], "skipped:", res.get("skipped"))
+        for k, v in sorted(res["effects"].items()):
+            print("  ", k, v)
 
 
 @app.local_entrypoint()
