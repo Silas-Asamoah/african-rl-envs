@@ -6,12 +6,17 @@ license = "Apache-2.0"
 requires-python = ">=3.11,<3.15"
 dependencies = ["sika-agent"]
 
+[project.optional-dependencies]
+analysis = ["numpy", "scikit-learn"]
+
 [tool.uv.sources]
 sika-agent = { path = "../../environments/sika_agent", editable = true }
 
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "numpy",
+    "scikit-learn",
 ]
 
 [build-system]

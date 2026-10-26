@@ -22,7 +22,13 @@ Ministral 3 8B Reasoning, both run on our own GPUs. Work in progress: no results
 - `sika_interp/modal_app.py`: loads a model on a Modal GPU, re-renders every turn of the
   given episodes, checks each against the prompt length the server reported, and saves the
   residual stream and MLP neurons at the last prompt token:
-  `uvx modal run -m sika_interp.modal_app --traces outputs/<run>/traces.jsonl`.
+  `uvx modal run -m sika_interp.modal_app --traces outputs/<run>/traces.jsonl`. Its `read`
+  entrypoint records three read points per episode: the end of the request, the last
+  reasoning token and the first action token.
+- `sika_interp/probes.py`: per-layer linear probes (within and across languages, folds
+  split by seed so twins never leak) and where each Twi–English request sits between its
+  English and Twi twins.
+- `sika_interp/results.py`: success and harm rates by language and category.
 
 ## Playing episodes on a Prime GPU pod
 
