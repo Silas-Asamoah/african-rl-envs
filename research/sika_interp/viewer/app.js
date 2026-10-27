@@ -358,40 +358,51 @@ function controlsStrip(det, dd, n) {
 }
 
 // ---------- steered transcripts ----------
-let ST = { decision: null, setting: null };
-async function renderSteered(M) {
-  const T = M.steered, table = $("steered-table"), ctl = $("t-controls"), cmp = $("t-compare");
-  const any = Object.values(DATA.models).some(m => m.steered);
+// Two runs share one block: the first (0.4, 23–25 pushes per model) and the low-dose run
+// (0.1 and 0.2, Qwen layer 19, ~200 decisions). Each keeps its own selection.
+const STB = { hi: { decision: null, setting: null }, lo: { decision: null, setting: null } };
+function renderSteered(M) {
+  const any = Object.values(DATA.models).some(m => m.steered || m.steered_lowdose);
   $("steered").hidden = !any; document.querySelectorAll('nav a[href="#steered"]').forEach(a => a.hidden = !any);
-  if (!T) { table.innerHTML = '<p class="def">Not run for this model.</p>'; ctl.innerHTML = ""; cmp.innerHTML = ""; return; }
-  const base = T.summary.unsteered;
+  steeredBlock(M.steered_lowdose, `steered-${model}-lowdose.json`, "lo");
+  steeredBlock(M.steered, `steered-${model}.json`, "hi");
+}
+function steeredBlock(T, file, k) {
+  const panel = $(`sb-${k}`), table = $(`sb-${k}-table`), ctl = $(`sb-${k}-controls`), cmp = $(`sb-${k}-compare`);
+  panel.hidden = !T; if (!T) return;
+  const st = STB[k], base = T.summary.unsteered;
   const rate = c => (c && c.n ? c.right / c.n : null), harm = c => (c && c.n ? c.harmful / c.n : null);
-  const dpp = (a, b) => (a == null || b == null ? "" : `<span style="color:${a - b >= 0 ? COL.good : COL.harm}">${a - b >= 0 ? "+" : "−"}${Math.abs(Math.round(100 * (a - b)))}</span>`);
+  const delta = (d, goodUp) => {
+    if (!d) return "";
+    const [m, lo, hi, n] = d, sig = lo > 0 || hi < 0, good = goodUp ? m >= 0 : m <= 0;
+    return `<span style="color:${good ? COL.good : COL.harm};${sig ? "font-weight:700" : "opacity:0.8"}" title="${(100 * m).toFixed(1)} points, 95% interval ${(100 * lo).toFixed(1)} to ${(100 * hi).toFixed(1)} over ${n} decisions">${m >= 0 ? "+" : "−"}${Math.abs(Math.round(100 * m))}${sig ? "★" : ""}</span>`;
+  };
   let h = `<table class="grid"><thead><tr><th>push</th><th>picked for</th><th>usable</th>${ORDER.map(l => `<th style="color:${COL[l]};text-align:center" colspan="2">${LANG[l]}</th>`).join("")}</tr><tr><th></th><th></th><th></th>${ORDER.map(() => "<th>right Δ</th><th>harmful Δ</th>").join("")}</tr></thead><tbody>`;
   for (const name of T.settings) {
     const c = T.summary[name], dirName = name.replace(/ [+−][0-9.]+$/, ""), info = T.directions[dirName] || {};
     const broken = c.usable != null && c.usable < 0.8;
-    h += `<tr data-setting="${esc(name)}" style="cursor:pointer;${broken ? "opacity:0.45" : ""}" title="${broken ? "the push broke the model's output in most replays; outcomes reflect replays ending without acting" : ""}"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? " · " + info.why : ""))}</td><td style="text-align:right;color:${broken ? COL.harm : COL.ink2}">${pct(c.usable)}</td>${ORDER.map(l => {
-      const r = rate(c[l]), hm = harm(c[l]);
-      return `<td style="text-align:right" title="${c[l] ? `${c[l].right} right, ${c[l].harmful} harmful, ${c[l].broken} broken tool calls, ${c[l].unfinished} not finished, of ${c[l].n}` : ""}">${pct(r)} ${name === "unsteered" ? "" : dpp(r, rate(base[l]))}${c[l] && c[l].broken ? ` <span class="def">⚠${c[l].broken}</span>` : ""}</td><td style="text-align:right">${pct(hm)} ${name === "unsteered" ? "" : `<span style="color:${hm - harm(base[l]) > 0 ? COL.harm : COL.good}">${hm == null ? "" : (hm - harm(base[l]) >= 0 ? "+" : "−") + Math.abs(Math.round(100 * (hm - harm(base[l]))))}</span>`}</td>`;
+    h += `<tr data-setting="${esc(name)}" style="cursor:pointer;${broken ? "opacity:0.45" : ""}" title="${broken ? "the push broke the model's output in most replays; outcomes reflect replays ending without acting" : ""}"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? (info.picked_for ? " · " : "") + info.why : ""))}</td><td style="text-align:right;color:${broken ? COL.harm : COL.ink2}">${pct(c.usable)}</td>${ORDER.map(l => {
+      const cl = c[l] || {};
+      return `<td style="text-align:right" title="${cl.n ? `${cl.right} right, ${cl.harmful} harmful, ${cl.broken} broken tool calls, ${cl.unfinished} not finished, of ${cl.n}` : ""}">${pct(rate(cl))} ${name === "unsteered" ? "" : delta(cl.d_right, true)}${cl.broken ? ` <span class="def">⚠${cl.broken}</span>` : ""}</td><td style="text-align:right">${pct(harm(cl))} ${name === "unsteered" ? "" : delta(cl.d_harm, false)}</td>`;
     }).join("")}</tr>`;
   }
-  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${T.decisions.length / 3} tasks × 3 languages) × 3–4 replays per push · dose ${T.doses.join(", ")} · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls (rejected by the server), counted as not right · usable: replays whose first turn is a valid call or a real reply; rows below 80% are faded</p>`;
-  table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { ST.setting = tr.dataset.setting; drawCompare(); });
-  ST.setting = ST.setting && T.settings.includes(ST.setting) ? ST.setting : T.settings[1];
-  ST.decision = ST.decision && T.decisions.includes(ST.decision) ? ST.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];
-  ctl.innerHTML = `<label class="def">decision<select id="t-dec">${T.decisions.map(d => `<option value="${esc(d)}" ${d === ST.decision ? "selected" : ""}>${esc(d.replace("eval/", "").replace("@", " · turn "))}</option>`).join("")}</select></label><label class="def">push<select id="t-set">${T.settings.filter(n => n !== "unsteered").map(n => `<option ${n === ST.setting ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
-  $("t-dec").onchange = e => { ST.decision = e.target.value; drawCompare(); };
-  $("t-set").onchange = e => { ST.setting = e.target.value; drawCompare(); };
-  drawCompare();
+  const tasks = T.decisions.length / 3;
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${tasks} matched triples) × ${T.samples} replays per push · dose ${T.doses.join(", ")} · Δ in percentage points, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls, counted as not right · usable: first turn is a valid call or a real reply; rows below 80% are faded</p>`;
+  table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { st.setting = tr.dataset.setting; drawCompare(T, file, k); });
+  st.setting = st.setting && T.settings.includes(st.setting) ? st.setting : T.settings[1];
+  st.decision = st.decision && T.decisions.includes(st.decision) ? st.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];
+  ctl.innerHTML = `<label class="def">decision<select data-r="dec">${T.decisions.map(d => `<option value="${esc(d)}" ${d === st.decision ? "selected" : ""}>${esc(d.replace("eval/", "").replace("@", " · turn "))}</option>`).join("")}</select></label><label class="def">push<select data-r="set">${T.settings.filter(n => n !== "unsteered").map(n => `<option ${n === st.setting ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
+  ctl.querySelector('[data-r="dec"]').onchange = e => { st.decision = e.target.value; drawCompare(T, file, k); };
+  ctl.querySelector('[data-r="set"]').onchange = e => { st.setting = e.target.value; drawCompare(T, file, k); };
+  drawCompare(T, file, k);
 }
-async function drawCompare() {
-  const cmp = $("t-compare"); cmp.innerHTML = '<p class="loading">Loading transcripts…</p>';
-  const data = await getJSON(`steered-${model}.json`);
-  if ($("t-set")) $("t-set").value = ST.setting;
-  const col = name => { const xs = ((data.results[name] || {})[ST.decision] || []).slice().sort((a, b) => a.sample - b.sample);
+async function drawCompare(T, file, k) {
+  const st = STB[k], cmp = $(`sb-${k}-compare`); cmp.innerHTML = '<p class="loading">Loading transcripts…</p>';
+  const data = await getJSON(file);
+  const sel = $(`sb-${k}-controls`).querySelector('[data-r="set"]'); if (sel) sel.value = st.setting;
+  const col = name => { const xs = ((data.results[name] || {})[st.decision] || []).slice().sort((a, b) => a.sample - b.sample);
     return `<div class="box"><h4>${esc(name)}</h4>${xs.map(x => replayCard(x)).join("") || '<p class="def">No replays.</p>'}</div>`; };
-  cmp.innerHTML = col("unsteered") + col(ST.setting);
+  cmp.innerHTML = col("unsteered") + col(st.setting);
 }
 function replayCard(x) {
   const badge = x.error ? `<span class="chip">error</span>` : x.outcome === 1 ? `<span class="chip r">right</span>` : x.outcome === -1 ? `<span class="chip h">harmful</span>` : `<span class="chip">not right</span>`;
@@ -411,10 +422,16 @@ async function renderPair() {
   if (!T || !SM) { box.innerHTML = '<p class="def">No steered replays for this model.</p>'; return; }
   const dd = S.decision != null ? SM.raw.decisions[S.decision] : null, nn = S.neuron != null ? SM.raw.neurons[S.neuron] : null;
   const key = dd ? `${dd.id}@${dd.turn}` : null, name = nn ? `L${nn[0]}·${nn[1]}` : null;
-  const settings = name ? T.settings.filter(x => x.startsWith(name + " ")) : [];
-  if (key && T.decisions.includes(key) && settings.length) {
-    const data = await getJSON(`steered-${model}.json`);
-    box.innerHTML = ["unsteered", ...settings].map(sname => { const xs = ((data.results[sname] || {})[key] || []).slice().sort((a, b) => a.sample - b.sample); return `<div class="box"><h4>${esc(sname)}</h4>${xs.map(replayCard).join("") || '<p class="def">No replays.</p>'}</div>`; }).join("");
+  const runs = [[T, `steered-${model}.json`, "dose 0.4"], [DATA.models[model].steered_lowdose, `steered-${model}-lowdose.json`, "low dose"]]
+    .filter(([R, , ]) => R && key && R.decisions.includes(key) && name && R.settings.some(x => x.startsWith(name + " ")));
+  if (runs.length) {
+    let html = "";
+    for (const [R, file, label] of runs) {
+      const data = await getJSON(file);
+      const settings = R.settings.filter(x => x.startsWith(name + " "));
+      html += `<div class="def">${label}</div>` + ["unsteered", ...settings].map(sname => { const xs = ((data.results[sname] || {})[key] || []).slice().sort((a, b) => a.sample - b.sample); return `<div class="box"><h4>${esc(sname)}</h4>${xs.map(replayCard).join("") || '<p class="def">No replays.</p>'}</div>`; }).join("");
+    }
+    box.innerHTML = html;
     return;
   }
   const dirs = Object.keys(T.directions).filter(n => !n.startsWith("random"));

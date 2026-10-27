@@ -385,6 +385,9 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
                            "broken": broken, "unfinished": sum(1 for x in xs if x["note"] and x["note"].startswith("not finished"))}
         allx = [x for xs in by.get(name, {}).values() for x in xs]
         cells["usable"] = round(sum(x["usable"] for x in allx) / max(len(allx), 1), 3)
+        if name != "unsteered":
+            for lang in LANGUAGES:
+                cells[lang] |= _paired_change(by.get("unsteered", {}), by.get(name, {}), lang)
         summary[name] = cells
     directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
     return {"settings": names, "decisions": decisions, "summary": summary, "directions": directions,
@@ -421,6 +424,33 @@ def sweep(runs: Path, key: str) -> dict | None:
     share = {lang: (np.round(100 * np.mean(v, axis=0)).astype(int).T.tolist() if v else None) for lang, v in beats.items()}
     return {"layer": layer, "width": width, "dose": sw["dose"], "decisions": {lang: len(v) for lang, v in beats.items()},
             "share": share, "picked": picked}  # share[lang] = [down shares, up shares], each [width]
+
+
+def _paired_change(base: dict, pushed: dict, lang: str, boot: int = 4000, seed: int = 0) -> dict:
+    """Change in the share of replays ending right and harmful, pushed minus unsteered, paired
+    by decision (each decision's mean over its replays), with a 95% bootstrap interval over
+    decisions. Broken tool calls count as not right."""
+    import numpy as np
+
+    def score(xs, want):
+        vals = [x["outcome"] == want for x in xs if x["outcome"] is not None or (x["note"] or "").startswith("broken")]
+        return float(np.mean(vals)) if vals else None
+
+    out = {}
+    rng = np.random.default_rng(seed)
+    for key, want in (("d_right", 1.0), ("d_harm", -1.0)):
+        diffs = []
+        for dk, xs in pushed.items():
+            if dk.split("/")[2] != lang or dk not in base:
+                continue
+            a, b = score(xs, want), score(base[dk], want)
+            if a is not None and b is not None:
+                diffs.append(a - b)
+        if diffs:
+            d = np.array(diffs)
+            means = d[rng.integers(0, len(d), (boot, len(d)))].mean(1)
+            out[key] = [round(float(d.mean()), 4), round(float(np.percentile(means, 2.5)), 4), round(float(np.percentile(means, 97.5)), 4), len(d)]
+    return out
 
 
 def _clean(value):
@@ -477,6 +507,7 @@ def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
         if cards:
             print(f"cards-{key}.json {_dump(out / f'cards-{key}.json', cards) / 1e6:.1f} MB")
         model["steered"] = steered(runs, key, out)
+        model["steered_lowdose"] = steered(runs, f"{key}-lowdose", out)
         model["sweep"] = sweep(runs, key)
         full = runs / SOURCES["steering"].format(key=key)
         if full.exists():

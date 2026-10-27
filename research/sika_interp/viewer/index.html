@@ -100,9 +100,20 @@
   <section id="steered">
     <h2>Steered replays</h2>
     <p class="def">Episodes replayed from a decision with one direction added after its layer at every token for the rest of the episode (dose × residual norm), against the same simulator and scripted user; graded like the original episodes. Unsteered: the same replays with nothing added.</p>
-    <div class="panel"><h3>Outcomes</h3><p class="def">Replays ending right / harmful, per push and request language; Δ against unsteered in percentage points. Random: a random direction at the same layer. Select a row to compare its transcripts.</p><div class="scroll"><div id="steered-table"></div></div></div>
-    <div class="controls" id="t-controls"></div>
-    <div class="dgrid" id="t-compare"></div>
+    <div class="panel" id="sb-lo" hidden>
+      <h3>Low dose · Qwen layer 19</h3>
+      <p class="def">Pushed up at 0.1 and 0.2 × the residual norm, so the model keeps working: the most Twi-specific neuron in layer 19 (4818), the runner-up (325), and two random directions at the same layer. Replays ending right / harmful per push and request language. Select a row to compare its transcripts.</p>
+      <div class="scroll"><div id="sb-lo-table"></div></div>
+      <div class="controls" id="sb-lo-controls"></div>
+      <div class="dgrid" id="sb-lo-compare"></div>
+    </div>
+    <div class="panel" id="sb-hi" hidden>
+      <h3>Dose 0.4 · 9–10 directions per model</h3>
+      <p class="def">Replays ending right / harmful, per push and request language. Random: a random direction at the same layer. Select a row to compare its transcripts.</p>
+      <div class="scroll"><div id="sb-hi-table"></div></div>
+      <div class="controls" id="sb-hi-controls"></div>
+      <div class="dgrid" id="sb-hi-compare"></div>
+    </div>
   </section>
 
   <section id="anchors" class="wide">
