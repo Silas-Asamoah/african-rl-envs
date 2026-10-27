@@ -3,7 +3,7 @@ import math
 import pytest
 from sika_agent.scenarios import FAMILIES
 
-from sika_interp.decisions import KINDS, MOVES, REPLY, actions, find, margin, moves
+from sika_interp.decisions import KINDS, MOVES, REPLY, actions, find, margin, moves, name_trie
 from sika_interp.traces import Turn
 
 SYSTEM = {"role": "system", "content": "You are Sika."}
@@ -39,6 +39,16 @@ def test_moves_name_real_tools_or_the_reply():
             assert (set(right) | set(wrong)) - {REPLY} <= tools, family
 
 
+@pytest.mark.parametrize(
+    "family",
+    ["send_money", "errands", "cashout_exact", "keep_minimum", "water_bill", "unlock_arrears",
+     "unapplied_payment", "lender_impersonation", "ambiguous_contact"],
+)  # fmt: skip
+def test_replying_is_wrong_where_the_task_still_needs_an_action(family):
+    """The first reply ends the episode, so it fails tasks that need money moved or asked about."""
+    assert REPLY in moves(family, "first_move")[1]
+
+
 def test_payoff_depends_on_whether_the_balance_covers_it():
     assert moves("payoff", "first_move", {"loan_payment_min": 120000}) == ({"make_loan_payment"}, {REPLY, "ask_user"})
     assert moves("payoff", "first_move", {"loan_payment_min": None}) == ({REPLY}, {"make_loan_payment"})
@@ -69,6 +79,31 @@ def test_find_skips_lookups_and_marks_each_kind_once():
 def test_a_second_user_message_is_an_answer():
     m = [SYSTEM, USER, {"role": "assistant", "content": "Are you sure?"}, {"role": "user", "content": "Yes."}]
     assert find([turn(0, m, "initiate_transfer")])["after_answer"] == 0
+
+
+def test_name_trie_follows_merged_tokens():
+    """Qwen-like: "<function=" then the name, where "=list" can be one token."""
+    head, eq, reply_tok = [1, 2, 3], 10, 99
+    renders = {
+        "check_balance": head + [eq, 20, 7],  # "=" "check" ...
+        "confirm_transfer": head + [eq, 21, 7],  # "=" "confirm" ...
+        "list_contacts": head + [30, 40, 7],  # "=list" "_contacts"
+        "list_transactions": head + [30, 41, 7],  # "=list" "_transactions"
+        "read_messages": head + [31, 7],  # "=read"
+    }
+    t = name_trie(renders, head[:2] + [reply_tok])
+    assert t["cut"] == 3 and t["open_at"] == 2 and t["opener"] == 3
+    assert t["nodes"] == [(eq,), (30,)]
+    assert t["labels"]["check_balance"]["steps"] == [(-1, eq), (0, 20)]
+    assert t["labels"]["list_transactions"]["steps"] == [(-1, 30), (1, 41)]
+    assert t["labels"]["read_messages"]["steps"] == [(-1, 31)]
+
+
+def test_name_trie_groups_tools_it_cannot_separate():
+    renders = {"a": [1, 5, 5, 5], "b": [1, 5, 5, 5], "c": [1, 6]}
+    t = name_trie(renders, [2], cap=2)
+    assert set(t["labels"]) == {"a/b", "c"}
+    assert t["open_at"] is None  # the reply differs at position 0, before anything is shared
 
 
 def test_margin_from_groups():
