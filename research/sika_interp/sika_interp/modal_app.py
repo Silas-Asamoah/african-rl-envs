@@ -589,6 +589,70 @@ class Model:
         return [dict(r, directions=meta) if i == 0 else r for i, r in enumerate(out)]
 
     @modal.method()
+    def neuron_contexts(self, episodes: list[dict], neurons: list[list[int]], top: int = 8, window: int = 14) -> dict:
+        """Where each listed MLP neuron fires most in the user's requests: per neuron and request
+        language, the `top` requests by the neuron's peak activation over the request's tokens,
+        each with the activations of the `window` tokens either side of the peak. Token texts
+        come from decoded prefixes, so Twi letters split across tokens stay whole."""
+        import heapq
+
+        import torch
+
+        by_layer: dict[int, list[int]] = {}
+        for layer, i in neurons:
+            by_layer.setdefault(layer, []).append(i)
+        heaps: dict[tuple[int, int, str], list] = {}
+        texts: dict[int, list[str]] = {}
+        for e, ep in enumerate(episodes):
+            ids = self.render(ep["messages"], ep["tools"])[0].tolist()
+            span = self.user_span(ids, ep["messages"][-1]["content"])
+            if span is None:
+                continue
+            start, prefixes = span
+            pieces = [p[len(prefixes[k - 1]) :] if k else p for k, p in enumerate(prefixes)]
+            n = len(pieces)
+            acts: dict[int, torch.Tensor] = {}
+
+            def grab(layer):
+                idx = torch.tensor(by_layer[layer], device="cuda")
+
+                def hook(module, args):
+                    acts[layer] = args[0][0, start : start + n][:, idx].float().cpu()  # [tokens, neurons]
+
+                return hook
+
+            handles = [self.layers[layer].mlp.down_proj.register_forward_pre_hook(grab(layer)) for layer in by_layer]
+            with torch.no_grad():
+                self.model(input_ids=torch.tensor([ids[: start + n]], device="cuda"), logits_to_keep=1)
+            for h in handles:
+                h.remove()
+            used = False
+            for layer, idxs in by_layer.items():
+                a = acts[layer]
+                peak, where = a.max(0)
+                for k, i in enumerate(idxs):
+                    key = (layer, i, ep["language"])
+                    heap = heaps.setdefault(key, [])
+                    item = (float(peak[k]), e, int(where[k]))
+                    if len(heap) < top or item[0] > heap[0][0]:
+                        lo, hi = max(0, item[2] - window), min(n, item[2] + window + 1)
+                        entry = (item[0], e, item[2], lo, [round(float(x), 3) for x in a[lo:hi, k]])
+                        (heapq.heappush if len(heap) < top else heapq.heapreplace)(heap, entry)
+                        used = True
+            if used:
+                texts[e] = pieces
+        out: dict = {"neurons": {}, "episodes": {}}
+        keep = set()
+        for (layer, i, lang), heap in heaps.items():
+            rows = sorted(heap, reverse=True)
+            out["neurons"].setdefault(f"{layer}:{i}", {})[lang] = [
+                {"peak": round(v, 3), "episode": e, "at": pos, "from": lo, "acts": w} for v, e, pos, lo, w in rows
+            ]
+            keep.update(e for _, e, *_ in rows)
+        out["episodes"] = {e: {"task_id": episodes[e]["task_id"], "pieces": texts[e]} for e in keep}
+        return out
+
+    @modal.method()
     def profile_moves(self, d: dict, neurons: list[list[int]], way: str, repeats: int = 3) -> dict:
         """Seconds spent in each part of one batch of pushes at decision `d`, for tuning."""
         import copy
@@ -1884,6 +1948,33 @@ def receivers(
     print(f"{model}: {len(rows)} turns; top receiver heads (layer, head, kurtosis): "
           + ", ".join(f"L{h['layer']}H{h['head']} {h['kurtosis']:.1f}" for h in result["receivers"][:8]))
     print(f"saved {path}")
+
+
+@app.local_entrypoint()
+def contexts(traces: str, run: str, model: str, batch: int = 300, out: str = ""):
+    """Top-firing request contexts (`neuron_contexts`) for every neuron card on `model`'s map
+    (map run `run`), over the first turn of every episode in `traces`; merged and saved."""
+    picked = [list(n) for n in sorted({(c["layer"], c["neuron"]) for c in cards_of.remote(run, model)})]
+    eps = first_turns(traces.split(",")).get(model, [])
+    calls = [(i, Model(model_id=model).neuron_contexts.spawn(eps[i : i + batch], picked)) for i in range(0, len(eps), batch)]
+    merged: dict = {"neurons": {}, "episodes": {}}
+    for offset, call in calls:
+        res = call.get()
+        for e, ep in res["episodes"].items():
+            merged["episodes"][str(int(e) + offset)] = ep
+        for key, langs in res["neurons"].items():
+            for lang, rows in langs.items():
+                for r in rows:
+                    r["episode"] += offset
+                merged["neurons"].setdefault(key, {}).setdefault(lang, []).extend(rows)
+    for langs in merged["neurons"].values():
+        for lang in langs:
+            langs[lang] = sorted(langs[lang], key=lambda r: -r["peak"])[:8]
+    used = {str(r["episode"]) for langs in merged["neurons"].values() for rows in langs.values() for r in rows}
+    merged["episodes"] = {e: v for e, v in merged["episodes"].items() if e in used}
+    path = Path(out or f"contexts-{run}-{model.split('/')[-1]}.json")
+    path.write_text(json.dumps(merged, ensure_ascii=False))
+    print(f"{model}: {len(merged['neurons'])} neurons, {len(merged['episodes'])} requests kept; saved {path}")
 
 
 @app.local_entrypoint()
