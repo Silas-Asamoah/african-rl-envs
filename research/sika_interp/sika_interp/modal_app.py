@@ -1807,7 +1807,10 @@ def suppress(traces: str, model: str, task_ids: str, out: str = ""):
 
 
 @app.local_entrypoint()
-def receivers(traces: str, model: str, task_ids: str, seeds: str = "1000000,1000001,1000006", top: int = 20, batch: int = 30, out: str = ""):
+def receivers(
+    traces: str, model: str, task_ids: str, seeds: str = "1000000,1000001,1000006", top: int = 20, batch: int = 30,
+    out: str = "", gpu: str = "L40S",
+):
     """Receiver heads (Thought Anchors) for `model`: `sentence_attention` on the first turn of
     every episode with these seeds (all families and languages) and the last turn of the
     anchor episodes `task_ids`; heads ranked by mean kurtosis of their vertical scores, the
@@ -1820,7 +1823,8 @@ def receivers(traces: str, model: str, task_ids: str, seeds: str = "1000000,1000
         t = ep["turns"][-1]
         items.append({"task_id": ep["task_id"], "language": ep["language"], "kind": "last", "index": len(ep["turns"]) - 1,
                       "messages": t["messages"], "tools": ep["tools"], "response": t["response"]})
-    calls = [Model(model_id=model).sentence_attention.spawn(items[i : i + batch]) for i in range(0, len(items), batch)]
+    # Full attention maps of long episodes need ~20 GB per layer: use a larger GPU for those.
+    calls = [Model.with_options(gpu=gpu)(model_id=model).sentence_attention.spawn(items[i : i + batch]) for i in range(0, len(items), batch)]
     rows = [r for c in calls for r in c.get()]
     for r, item in zip(rows, items):
         r["kind"] = item["kind"]
