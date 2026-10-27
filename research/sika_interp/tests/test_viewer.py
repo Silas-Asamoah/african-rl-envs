@@ -1,6 +1,6 @@
 import json
 
-from sika_interp.viewer import steered
+from sika_interp.viewer import steered, wording
 
 
 def _run(tmp_path, outcomes, broken=()):
@@ -54,3 +54,19 @@ def test_twi_side_change_is_paired_with_the_english_change_of_the_same_triple(tm
     assert gap["en-tw"]["d_harm"][0] == 0.5 and gap["en-tw"]["d_harm"][3] == 2
     assert gap["tw"]["d_harm"][0] == -0.5
     assert "r_harm" not in gap["en-tw"]  # no random direction at this layer
+
+
+def test_wording_counts_matched_twi_english_requests_with_no_twi_word(tmp_path):
+    def trace(lang, seed, prompt):
+        return {"task": {"data": {"family": "fake_refund", "seed": seed, "language": lang, "prompt": prompt}}}
+
+    rows = [trace("en", 0, "Send the money to my sister."), trace("tw", 0, "Mesrɛ wo, fa sika no kɔma me nuabea."),
+            trace("en-tw", 0, "Please send the sika kɔma my sister."),
+            trace("en", 1, "Send the money to my sister."), trace("tw", 1, "Mesrɛ wo, fa sika no kɔma me nuabea."),
+            trace("en-tw", 1, "Please send the money to my sister."),
+            trace("en-tw", 2, "Please send the money to my sister.")]  # no twins: left out
+    (tmp_path / "study-matched-q").mkdir()
+    (tmp_path / "study-matched-q" / "traces.jsonl").write_text(json.dumps({"traces": rows}))
+    got = wording(tmp_path, "q")
+    assert got["en_tw"] == 2 and got["en_tw_no_twi"] == 1
+    assert 0 < got["reviewed"] <= got["phrasings"]

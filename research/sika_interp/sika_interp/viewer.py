@@ -11,6 +11,7 @@ cards-<model>.json (neuron cards with their top-firing contexts). Missing pieces
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -92,6 +93,27 @@ def reasoning_language(runs: Path, key: str) -> dict:
         total = c["en"] + c["tw"] + c["mixed"] or 1
         out[lang] = {"en": c["en"] / total, "tw": c["tw"] / total, "mixed": c["mixed"] / total, "words": total}
     return out
+
+
+def wording(runs: Path, key: str) -> dict:
+    """How much of the Twi wording a native speaker read (from sika-agent's phrasings file), and
+    how many matched Twi–English requests have no Twi or mixed word."""
+    import sika_agent
+
+    status = json.loads((Path(sika_agent.__file__).parent / "phrasings.json").read_text(encoding="utf-8"))["status"]
+    review = re.search(r"native review: (\d+) of (\d+)", status)
+    prompts = defaultdict(dict)
+    for path in traces_of(runs, key):
+        for trace in load(path):
+            d = trace["task"]["data"]
+            prompts[(d["family"], d["seed"])][d["language"]] = d["prompt"]
+    mixed = [v["en-tw"] for v in prompts.values() if set(v) == set(LANGUAGES)]
+    return {
+        "reviewed": int(review[1]) if review else None,
+        "phrasings": int(review[2]) if review else None,
+        "en_tw": len(mixed),
+        "en_tw_no_twi": sum(not any(w.tag in ("tw", "mixed") for w in tag(p)) for p in mixed),
+    }
 
 
 def words_alone(runs: Path) -> dict:
@@ -549,6 +571,7 @@ def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
             "behaviour": behaviour(runs, key),
             "by_family": by_family(runs, key),
             "reasoning_language": reasoning_language(runs, key),
+            "wording": wording(runs, key),
             "probes": _read(read / f"probes-{meta['run']}-{meta['name']}.json"),
             "placement_outcome": placement_outcome(runs, key),
             "cues": None,
