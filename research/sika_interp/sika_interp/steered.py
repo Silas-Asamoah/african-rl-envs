@@ -57,7 +57,7 @@ async def run(args) -> None:
         for trace in load(path):
             tid = trace["task"]["data"]["id"]
             if tid in ids and trace["agent"]["config"]["model"] == args.model:
-                built = rebuild(trace)
+                built = rebuild(trace, upto=max(k for t, k in wanted if t == tid))
                 tools = turns(trace)[0].tools
                 expect = Expect.model_validate(trace["task"]["data"]["expect"])
                 for t, k in wanted:

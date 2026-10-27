@@ -58,13 +58,16 @@ def call_tool(state: SikaState, name: str, arguments: str) -> str:
         return f"Error: {e}"
 
 
-def rebuild(trace: dict) -> list[Point]:
-    """The episode just before each of its model turns, rebuilt by re-running its tool calls.
-    Raises if a re-run tool result differs from the recorded one."""
+def rebuild(trace: dict, upto: int | None = None) -> list[Point]:
+    """The episode just before each of its model turns (up to turn `upto`, if given), rebuilt
+    by re-running its tool calls. Raises if a re-run tool result differs from the recorded one
+    before that turn."""
     data = trace["task"]["data"]
     state = SikaState.model_validate(data["world"])
     points, said, user_used = [], [], 0
     for t in turns(trace):
+        if upto is not None and t.index > upto:
+            break
         history = t.messages
         # Bring the state up to this turn: execute the calls the previous turn made, and
         # record a plain-text question the scripted user answered.
