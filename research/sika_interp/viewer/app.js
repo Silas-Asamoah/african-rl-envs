@@ -685,7 +685,7 @@ function renderAnchors(M) {
   const A = M.anchors || [], groups = {};
   for (const ep of A) { const [, fam, lang, seed] = ep.task_id.split("/"); (groups[fam + " · seed " + seed] ||= {})[lang] = ep; }
   const keys = Object.keys(groups).sort();
-  $("a-controls").innerHTML = `<label class="def">task<select id="triple">${keys.map(k => `<option>${esc(k)}</option>`).join("")}</select></label><span class="seg">${[["links", "deletion links"], ["blocked", "attention-blocking links"]].map(([k, t]) => `<button data-k="${k}" aria-pressed="${k === linkKind}">${t}</button>`).join("")}</span><span class="def">${A.length ? A[0].replays + " replays per turn" : ""}${A[0] && A[0].blocked_layers ? ` · attention blocked in ${A[0].blocked_layers.length} full-attention layers` : ""}</span>`;
+  $("a-controls").innerHTML = `<label class="def">task<select id="triple">${keys.map(k => `<option>${esc(k)}</option>`).join("")}</select></label><span class="seg">${[["links", "deletion links"], ["blocked", "attention-blocking links"]].map(([k, t]) => `<button data-k="${k}" aria-pressed="${k === linkKind}">${t}</button>`).join("")}</span><span class="def">${A.length ? `${keys.length} tasks × 3 languages · ${A[0].replays} replays per turn` : ""}${A[0] && A[0].blocked_layers ? ` · attention blocked in ${A[0].blocked_layers.length} full-attention layers` : ""}</span>`;
   const draw = () => {
     const g = groups[$("triple").value] || {};
     $("lanes").innerHTML = ORDER.map(l => lane(g[l], l)).join("");
@@ -696,19 +696,24 @@ function renderAnchors(M) {
   document.querySelectorAll("#a-controls .seg button").forEach(b => b.onclick = () => { linkKind = b.dataset.k; renderAnchors(M); });
   draw(); renderKurtosis(M);
 }
+// Mean outcome with model turn t kept: replaying from the next turn, or after the last turn the
+// episode's own grade.
+function turnKept(ep, t) { return t + 1 < ep.outcome_from_turn.length ? ep.outcome_from_turn[t + 1] : ep.outcome ?? null; }
 function lane(ep, l) {
   if (!ep) return `<div class="lane ${l === "en-tw" ? "center" : ""}"><h3><span style="color:${COL[l]}">${LANG[l]}</span></h3><span class="def">no replays</span></div>`;
   const out = ep.outcome_from_turn, inflow = {}; for (const [i, j, kl] of ep[linkKind] || []) inflow[i] = Math.max(inflow[i] || 0, kl);
   const turnOf = {}; ep.turn_step.forEach((s, t) => turnOf[s] = t);
   const steps = ep.steps.map((st, i) => {
     const t = turnOf[i]; let size, fill = "none", stroke = COL.muted, label;
+    let sub = "";
     if (st.role === "assistant" && t != null) {
-      const here = out[t], next = out[t + 1], imp = here == null ? 0 : Math.abs((next == null ? here : next) - here) / 2;
-      size = 10 + 22 * Math.min(1, imp); fill = st.calls.some(c => PAY.includes(c)) ? COL.harm : st.calls.some(c => PROTECT.includes(c)) ? COL.good : COL.ink2; stroke = fill;
-      label = `turn ${t} · replayed from here ${here == null ? "–" : fx(here, 1)}`;
+      const here = out[t], kept = turnKept(ep, t), d = here == null || kept == null ? null : kept - here;
+      size = 10 + 22 * Math.min(1, Math.abs(d || 0) / 2); fill = st.calls.some(c => PAY.includes(c)) ? COL.harm : st.calls.some(c => PROTECT.includes(c)) ? COL.good : COL.ink2; stroke = fill;
+      label = `turn ${t} · Δ <span style="color:${d > 0 ? COL.good : d < 0 ? COL.harm : COL.ink}">${d == null ? "–" : Math.abs(d) < 0.05 ? "0.0" : fx(d, 1)}</span>`;
+      sub = `<span class="def" title="mean outcome regenerating this turn → with it kept">${here == null ? "–" : fx(here, 1)} → ${kept == null ? "–" : fx(kept, 1)}</span><br>`;
     } else { size = 10 + 22 * Math.min(1, (inflow[i] || 0) / 1.0); label = st.role === "tool" ? "tool result" : "user"; }
     const what = st.role === "assistant" ? (st.calls.length ? st.calls.join(", ") : "reply") : st.role === "user" ? st.text : (st.results[0] || st.text);
-    return `<div class="step" tabindex="0" data-task="${esc(ep.task_id)}" data-i="${i}"><span class="ring"><svg width="34" height="34"><circle cx="17" cy="17" r="${size / 2}" fill="${fill}" stroke="${stroke}" stroke-width="2"/></svg></span><span class="what"><b>${esc(label)}</b><br>${esc(String(what).slice(0, 120))}</span></div>`;
+    return `<div class="step" tabindex="0" data-task="${esc(ep.task_id)}" data-i="${i}"><span class="ring"><svg width="34" height="34"><circle cx="17" cy="17" r="${size / 2}" fill="${fill}" stroke="${stroke}" stroke-width="2"/></svg></span><span class="what"><b>${label}</b><br>${sub}${esc(String(what).slice(0, 120))}</span></div>`;
   }).join("");
   return `<div class="lane ${l === "en-tw" ? "center" : ""}" data-task="${esc(ep.task_id)}"><h3><span style="color:${COL[l]}">${LANG[l]}</span><span class="def">${esc(ep.task_id.split("/")[1])} · ${esc(ep.task_id.split("/")[3])}</span></h3>${steps}</div>`;
 }
@@ -734,7 +739,9 @@ function selectStep(A, el) {
   const range = stepMessages(ep)[i], sents = (ep.sentences || []).filter(s => s.message >= range[0] && s.message < range[1] && s.score != null);
   const smax = Math.max(1e-9, ...(ep.sentences || []).filter(s => s.score != null && s.role !== "system").map(s => s.score));
   const shaded = sents.length ? `<div><div class="def">receiver-head score per sentence in the last turn's view of this step (shading relative to the episode's highest non-system sentence)</div><div class="text" style="max-height:none">${sents.map(s => `<span class="sent" style="background:${seqColour(s.score / smax)}" title="${(s.score * 1000).toFixed(2)}e-3">${esc(s.text)}</span>`).join(" ")}</div></div>` : "";
-  $("step-detail").innerHTML = `<div><b>${LANG[ep.task_id.split("/")[2]]} · step ${i} · ${esc(st.role)}${st.calls.length ? " · " + esc(st.calls.join(", ")) : ""}</b></div>${st.reasoning ? `<div><div class="def">reasoning</div><div class="text">${esc(st.reasoning)}</div></div>` : ""}${st.text ? `<div class="text">${esc(st.text)}</div>` : ""}${st.results.length ? `<div><div class="def">tool results</div><div class="text">${esc(st.results.join("\n"))}</div></div>` : ""}${out.length ? `<div class="def">${linkKind === "links" ? "deleting" : "blocking attention to"} this step moves: ${out.join(", ")}</div>` : ""}${shaded}`;
+  const t = ep.turn_step.indexOf(i), here = t < 0 ? null : ep.outcome_from_turn[t], kept = t < 0 ? null : turnKept(ep, t);
+  const turnLine = t < 0 || here == null || kept == null ? "" : `<div class="def">turn ${t} · mean outcome over ${ep.replays} replays: ${fx(here, 1)} regenerating this turn, ${fx(kept, 1)} with it kept${t + 1 === ep.outcome_from_turn.length ? " (the episode's own grade)" : ""} · Δ ${Math.abs(kept - here) < 0.05 ? "0.0" : fx(kept - here, 1)}</div>`;
+  $("step-detail").innerHTML = `<div><b>${LANG[ep.task_id.split("/")[2]]} · step ${i} · ${esc(st.role)}${st.calls.length ? " · " + esc(st.calls.join(", ")) : ""}</b></div>${turnLine}${st.reasoning ? `<div><div class="def">reasoning</div><div class="text">${esc(st.reasoning)}</div></div>` : ""}${st.text ? `<div class="text">${esc(st.text)}</div>` : ""}${st.results.length ? `<div><div class="def">tool results</div><div class="text">${esc(st.results.join("\n"))}</div></div>` : ""}${out.length ? `<div class="def">${linkKind === "links" ? "deleting" : "blocking attention to"} this step moves: ${out.join(", ")}</div>` : ""}${shaded}`;
 }
 function renderKurtosis(M) {
   const R = M.receivers, box = $("kurt"); if (!R) { box.innerHTML = ""; $("kurt-top").innerHTML = ""; return; }

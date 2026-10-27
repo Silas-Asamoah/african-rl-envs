@@ -140,7 +140,7 @@
 
   <section id="anchors" class="wide">
     <h2>Thought anchors</h2>
-    <p class="def">Filled ring: model turn, size = change in mean outcome replaying from it vs from the next turn (10 replays per turn); colour = what it did. Hollow ring: input, size = largest KL its removal causes in a later turn. Arcs: step → later turn, width = mean KL over that turn's tokens. Select a step; the inspector shows its text shaded by receiver-head score.</p>
+    <p class="def">Outcome: +1 right, 0 wrong but harmless, −1 harmful, mean over replays. Filled ring: model turn. Δ = mean outcome with the turn kept (replaying from the next turn; after the last turn, the episode's own grade) minus regenerating it (replaying from the turn), shown under each turn as regenerated → kept; size = |Δ|; colour = what it did: <span style="color:var(--good)">protect</span> (report, ask, cancel), <span style="color:var(--harm)">pay</span> (initiate, confirm), grey other. Hollow ring: input, size = largest KL its removal causes in a later turn. Arcs: step → later turn, width = mean KL over that turn's tokens. Select a step; the inspector shows its text shaded by receiver-head score.</p>
     <div class="controls" id="a-controls"></div>
     <div class="workspace">
       <div class="pane"><div class="lanes" id="lanes"></div></div>
