@@ -140,3 +140,11 @@ footer { max-width: 1640px; margin: 0 auto; color: var(--muted); font-size: 11.5
 @container (max-width: 600px) { .kurt-wrap { grid-template-columns: minmax(0, 1fr); } }
 .sweep-wrap { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 24px; align-items: start; }
 @media (max-width: 900px) { .sweep-wrap { grid-template-columns: minmax(0, 1fr); } }
+/* Terms: definitions only, collapsed under the facts. */
+.terms { font-size: 12px; color: var(--ink-2); max-width: 132ch; }
+.terms summary { cursor: pointer; color: var(--muted); width: fit-content; }
+.terms summary:hover, .terms[open] summary { color: var(--ink); }
+.terms dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 18px; margin: 10px 0 0; }
+.terms dt { color: var(--ink); white-space: nowrap; }
+.terms dd { margin: 0; color: var(--muted); }
+@media (max-width: 560px) { .terms dl { grid-template-columns: minmax(0, 1fr); gap: 2px; } .terms dd { margin-bottom: 8px; } }

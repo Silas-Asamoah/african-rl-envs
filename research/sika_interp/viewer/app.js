@@ -104,6 +104,8 @@ function stacked(el, rows) {
 function renderBehaviour(M) {
   const B = M.behaviour;
   $("facts").textContent = `${M.name} · sika-agent 0.3.1 · ${B.twins} matched tasks × English, Twi–English, Twi · same wallet, people, amounts and expected outcome; only the wording differs${B.errored ? ` · ${B.errored} rollouts errored, left out` : ""}`;
+  const W = M.wording;
+  $("wording").textContent = W ? `Twi and Twi–English wording: machine-written, meaning back-checked by a second model; a native Twi reader reviewed ${W.reviewed} of ${W.phrasings} phrasings · ${W.en_tw_no_twi} of ${W.en_tw} Twi–English requests have no Twi or mixed word` : "";
   $("langkey").innerHTML = ORDER.map(l => `<span><span class="sw" style="background:${COL[l]}"></span>${LANG[l]}</span>`).join("") + `<span><span class="sw" style="background:${COL.good}"></span>right move</span><span><span class="sw" style="background:${COL.harm}"></span>wrong or harmful</span>`;
   $("tiles").innerHTML = ORDER.map(l => {
     const v = B.languages[l], pair = B["en_vs_" + l];
