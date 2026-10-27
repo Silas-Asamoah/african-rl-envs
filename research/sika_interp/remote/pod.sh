@@ -93,14 +93,17 @@ serve-steer)
   ;;
 steered)
   # Steered transcripts (sika_interp.steered) for one model, in the background.
-  name=${2:?steered qwen|ministral}
+  # Optional run tag: `steered qwen lowdose` uses traces/plan-qwen-lowdose.json and writes
+  # outputs/steered-qwen-lowdose.jsonl.
+  name=${2:?steered qwen|ministral [tag]}
+  tag=${3:+-$3}
   case "$name" in qwen) model=Qwen/Qwen3.5-9B; base=8000; rpc=8000 ;; ministral) model=$MINISTRAL; base=8002; rpc=8001 ;; esac
   traces=$(ls "$ROOT"/traces/study-*-"$name"/traces.jsonl)
   (cd "$HERE" && setsid nohup "$VENVS/client/bin/python" -m sika_interp.steered --traces $traces --model "$model" \
     --base-url "http://localhost:$base/v1" --rpc "http://localhost:$rpc" --config "$HERE/configs/$name.toml" \
-    --plan "$ROOT/traces/plan-$name.json" --out "$ROOT/outputs/steered-$name.jsonl" ${STEER_ARGS:-} \
-    > "$LOGS/steered-$name.log" 2>&1 < /dev/null &)
-  log "steered $name started"
+    --plan "$ROOT/traces/plan-$name$tag.json" --out "$ROOT/outputs/steered-$name$tag.jsonl" ${STEER_ARGS:-} \
+    > "$LOGS/steered-$name$tag.log" 2>&1 < /dev/null &)
+  log "steered $name$tag started"
   ;;
 wait)
   for name in "${@:2}"; do
