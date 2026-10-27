@@ -32,6 +32,8 @@ SOURCES = {
     "suppress": "anchors2/suppress-{key}.json",
     "receivers": "anchors2/receivers-{key}.json",
     "steering": "steer/full-{key}.json",
+    "steered": "steer/steered-{key}.jsonl",
+    "plan": "steer/plan-{key}.json",
 }
 """Where the re-runs after the tag fix (2026-10-27) put their results, under --runs."""
 
@@ -128,14 +130,23 @@ def words_alone(runs: Path) -> dict:
 
 
 def by_family(runs: Path, key: str) -> dict:
-    """Success and harm per task family and language over the matched twins."""
+    """Success and harm per task family and language over the matched twins, and per family
+    the paired flips: twins right in English but not in Twi–English (or Twi), and the reverse."""
     eps, _ = episodes(traces_of(runs, key))
     out: dict = defaultdict(lambda: {lang: {"n": 0, "right": 0, "harmful": 0} for lang in LANGUAGES})
+    twins: dict = defaultdict(dict)
     for e in eps:
         cell = out[e.family][e.language]
         cell["n"] += 1
         cell["right"] += e.reward == 1.0
         cell["harmful"] += e.reward == -1.0
+        twins[(e.family, e.seed)][e.language] = e.reward == 1.0
+    for fam, cells in out.items():
+        full = [v for (f, _), v in twins.items() if f == fam and set(v) == set(LANGUAGES)]
+        cells["flips"] = {
+            lang: {"lost": sum(v["en"] and not v[lang] for v in full), "gained": sum(v[lang] and not v["en"] for v in full)}
+            for lang in ("en-tw", "tw")
+        }
     return dict(sorted(out.items()))
 
 
@@ -317,6 +328,51 @@ def card_file(runs: Path, key: str) -> list[dict] | None:
     return cards
 
 
+def steered(runs: Path, key: str, out: Path) -> dict | None:
+    """Steered transcripts: writes steered-<key>.json (every replay's outcome and transcript,
+    trimmed) and returns the summary the page draws inline: per setting and request language,
+    replays that ended right, harmful or neither."""
+    path = runs / SOURCES["steered"].format(key=key)
+    plan = _read(runs / SOURCES["plan"].format(key=key))
+    if not path.exists() or not plan:
+        return None
+
+    def trim(m: dict) -> dict:
+        if m["role"] == "verdict":
+            return m
+        t = {"role": m["role"]}
+        if m.get("reasoning_content"):
+            t["reasoning"] = m["reasoning_content"][:2000]
+        if m.get("content"):
+            t["content"] = str(m["content"])[:1200]
+        if m.get("tool_calls"):
+            t["calls"] = [f"{c['function']['name']}({c['function']['arguments'][:200]})" for c in m["tool_calls"]]
+        if m["role"] == "tool":
+            t["name"] = m.get("name")
+        return t
+
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    by: dict = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        by[r["setting"]][f"{r['task_id']}@{r['turn']}"].append(
+            {"sample": r["sample"], "outcome": r.get("outcome"), "error": r.get("error"),
+             "transcript": [trim(m) for m in r.get("transcript", [])]}
+        )
+    names = [s["name"] for s in __import__("sika_interp.steered", fromlist=["settings"]).settings(plan)]
+    decisions = [f"{d['task_id']}@{d['turn']}" for d in plan["decisions"]]
+    _dump(out / f"steered-{key}.json", {"settings": names, "decisions": decisions, "results": by})
+    summary = {}
+    for name in names:
+        cells = {}
+        for lang in LANGUAGES:
+            outs = [x["outcome"] for dk, xs in by.get(name, {}).items() if dk.split("/")[2] == lang for x in xs if x["outcome"] is not None]
+            cells[lang] = {"n": len(outs), "right": sum(o == 1 for o in outs), "harmful": sum(o == -1 for o in outs)}
+        summary[name] = cells
+    directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
+    return {"settings": names, "decisions": decisions, "summary": summary, "directions": directions,
+            "doses": plan["doses"], "samples": plan.get("samples")}
+
+
 def _clean(value):
     """NaN and infinities as null: JSON has no NaN, and the page reads null as missing."""
     if isinstance(value, float):
@@ -370,6 +426,7 @@ def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
         cards = card_file(runs, key)
         if cards:
             print(f"cards-{key}.json {_dump(out / f'cards-{key}.json', cards) / 1e6:.1f} MB")
+        model["steered"] = steered(runs, key, out)
         full = runs / SOURCES["steering"].format(key=key)
         if full.exists():
             model["steering"] = pack_steering(full, (npz / meta["name"]) if npz else None, traces_of(runs, key), out, key)

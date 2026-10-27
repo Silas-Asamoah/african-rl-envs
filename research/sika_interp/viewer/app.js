@@ -28,6 +28,16 @@ const asI8 = b64 => new Int8Array(bytes(b64).buffer);
 const unsq = q => (q === -128 ? NaN : Math.sign(q) * (q / 20) ** 2);
 const unlp = q => (q === 255 ? NaN : -q / 4);
 
+// ---------- tabs ----------
+const onShow = { view: { map: () => drawMap(DATA.models[model].map) }, insp: { circuit: () => renderCircuit(), neuron: () => document.querySelectorAll("#dash canvas[data-strip]").forEach(drawStrip), replays: () => renderPair() }, anch: { receivers: () => renderKurtosis(DATA.models[model]) } };
+function showTab(group, name) {
+  document.querySelectorAll(`.tabs[data-group="${group}"] [role="tab"]`).forEach(b => b.setAttribute("aria-selected", b.dataset.tab === name));
+  document.querySelectorAll(`.tab-body[data-group="${group}"]`).forEach(el => el.hidden = el.dataset.tab !== name);
+  const f = (onShow[group] || {})[name]; if (f && DATA) f();
+}
+function currentTab(group) { const b = document.querySelector(`.tabs[data-group="${group}"] [aria-selected="true"]`); return b ? b.dataset.tab : null; }
+document.querySelectorAll(".tabs[data-group]").forEach(t => t.querySelectorAll('[role="tab"]').forEach(b => b.addEventListener("click", () => showTab(t.dataset.group, b.dataset.tab))));
+
 // ---------- tooltip ----------
 const tip = $("tip");
 function showTip(ev, html) { tip.innerHTML = html; tip.hidden = false; const w = tip.offsetWidth, h = tip.offsetHeight; tip.style.left = Math.min(ev.clientX + 14, innerWidth - w - 8) + "px"; tip.style.top = Math.min(ev.clientY + 14, innerHeight - h - 8) + "px"; }
@@ -51,14 +61,14 @@ function seqColour(t, hex = COL.act) { return mix(hex, 0.08 + 0.92 * Math.max(0,
 // ---------- small charts ----------
 function legend(el, items) { el.innerHTML = items.map(s => `<span><i style="border-color:${s.color};${s.dash ? "border-top-style:dashed" : ""}"></i>${esc(s.name)}</span>`).join(""); }
 function lines(el, series, o = {}) {
-  const W = 520, H = 220, m = { l: 44, r: 12, t: 10, b: 30 };
+  const W = 600, H = 280, m = { l: 46, r: 14, t: 12, b: 32 };
   const n = Math.max(...series.map(s => (s.values ? s.values.length : 0)), 2);
   const [y0, y1] = o.y || [0, 1]; const yfmt = o.yfmt || pct;
   const x = i => m.l + (W - m.l - m.r) * (i / (n - 1)), y = v => m.t + (H - m.t - m.b) * (1 - (v - y0) / (y1 - y0));
   let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(o.label || "")}">`;
   for (let k = 0; k <= 4; k++) { const v = y0 + (y1 - y0) * k / 4; g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${COL.grid}"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${yfmt(v)}</text>`; }
   if (o.zero) g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(0)}" y2="${y(0)}" stroke="${COL.muted}" stroke-width="1"/>`;
-  const step = n > 20 ? 8 : 4;
+  const step = n > 20 ? 8 : n > 10 ? 4 : 1;
   for (let i = 0; i < n; i += step) if (x(i) < W - m.r - 50) g += `<text x="${x(i)}" y="${H - 10}" text-anchor="middle">${o.xs ? o.xs[i] : i}</text>`;
   g += `<text x="${W - m.r}" y="${H - 10}" text-anchor="end">${esc(o.xlabel || "layer")} →</text>`;
   for (const s of series) {
@@ -102,10 +112,20 @@ function renderBehaviour(M) {
   const F = M.by_family, cats = Object.fromEntries(["payments", "credit", "scams", "check_first", "injection", "other"].map(c => [c, []]));
   for (const [fam, langs] of Object.entries(F)) cats[familyCategory(M, fam)].push([fam, langs]);
   for (const c of Object.keys(cats)) if (!cats[c].length) delete cats[c];
-  let h = `<table class="grid"><thead><tr><th>task</th>${ORDER.map(l => `<th style="text-align:center;color:${COL[l]}">${LANG[l]}</th>`).join("")}</tr></thead><tbody>`;
+  const DW = 280, dx = v => 8 + (DW - 16) * v;
+  const axis = `<svg width="${DW}" height="16" style="display:block">${[[0, "start"], [0.5, "middle"], [1, "end"]].map(([v, a]) => `<text x="${dx(v)}" y="12" text-anchor="${a}">${Math.round(100 * v)}%</text>`).join("")}</svg>`;
+  const dots = langs => {
+    const rs = ORDER.map(l => (langs[l].n ? langs[l].right / langs[l].n : null)).filter(v => v != null);
+    let g = `<svg width="${DW}" height="18" style="display:block"><line x1="${dx(0)}" x2="${dx(1)}" y1="9" y2="9" stroke="${COL.grid}"/>`;
+    if (rs.length > 1) g += `<line x1="${dx(Math.min(...rs))}" x2="${dx(Math.max(...rs))}" y1="9" y2="9" stroke="${COL.muted}" stroke-width="2"/>`;
+    for (const l of ["en", "tw", "en-tw"]) { const c = langs[l]; if (!c.n) continue; g += `<circle cx="${dx(c.right / c.n)}" cy="9" r="${l === "en-tw" ? 5.5 : 4.5}" fill="${COL[l]}" stroke="#121212" stroke-width="1.5"><title>${LANG[l]}: ${pct(c.right / c.n)}</title></circle>`; }
+    return g + "</svg>";
+  };
+  const flip = f => f ? `<span style="color:${COL.harm}" title="right in English, not here">${f.lost}</span> / <span style="color:${COL.good}" title="right here, not in English">${f.gained}</span>` : "";
+  let h = `<table class="grid"><thead><tr><th>task</th>${ORDER.map(l => `<th style="text-align:center;color:${COL[l]}">${LANG[l]}</th>`).join("")}<th>${axis}</th><th style="color:${COL["en-tw"]}">flips vs English<br><span class="def">Twi–English</span></th><th style="color:${COL.tw}">flips vs English<br><span class="def">Twi</span></th></tr></thead><tbody>`;
   for (const [cat, rows] of Object.entries(cats)) {
-    h += `<tr class="cat"><td colspan="4">${esc(cat.replace("_", " "))}</td></tr>`;
-    for (const [fam, langs] of rows) h += `<tr><td>${esc(fam)}</td>${ORDER.map(l => { const c = langs[l]; const r = c.n ? c.right / c.n : null; return `<td class="cell" style="background:${r == null ? "#161616" : seqColour(r, COL.good)};color:${r != null && r > 0.55 ? "#0d0d0d" : COL.ink}" title="${esc(fam)} · ${LANG[l]}: ${c.right}/${c.n} right, ${c.harmful} harmful">${pct(r)}${c.harmful ? ` <span style="color:${COL.harm}">▲${c.harmful}</span>` : ""}</td>`; }).join("")}</tr>`;
+    h += `<tr class="cat"><td colspan="7">${esc(cat.replace("_", " "))}</td></tr>`;
+    for (const [fam, langs] of rows) h += `<tr><td>${esc(fam)}</td>${ORDER.map(l => { const c = langs[l]; const r = c.n ? c.right / c.n : null; return `<td class="cell" style="background:${r == null ? "#161616" : seqColour(r, COL.good)};color:${r != null && r > 0.55 ? "#0d0d0d" : COL.ink}" title="${esc(fam)} · ${LANG[l]}: ${c.right}/${c.n} right, ${c.harmful} harmful">${pct(r)}${c.harmful ? `<span class="harmchip">▲${c.harmful}</span>` : ""}</td>`; }).join("")}<td>${dots(langs)}</td><td style="text-align:center">${flip((langs.flips || {})["en-tw"])}</td><td style="text-align:center">${flip((langs.flips || {}).tw)}</td></tr>`;
   }
   $("family-grid").innerHTML = h + "</tbody></table>";
 }
@@ -138,7 +158,7 @@ function renderReadouts(M) {
   const PO = M.placement_outcome;
   if (PO) {
     const s = [["request_end", "end of request", COL.ink], ["reasoning_end", "end of reasoning", COL.act], ["action_start", "first action token", COL.muted]].map(([k, name, color]) => ({ name, color, values: PO[k].diff, marks: PO[k].p.map(p => p < 0.001), extra: i => `p ${PO[k].p[i]}` }));
-    legend($("l-outcome"), s); lines($("c-outcome"), s, { y: [-0.3, 0.15], zero: true, yfmt: v => fx(v) });
+    legend($("l-outcome"), s); lines($("c-outcome"), s, { y: [-0.3, 0.1], zero: true, yfmt: v => fx(v) });
     const r = PO.request_end; $("n-outcome").textContent = `${r.episodes} Twi–English episodes in ${r.types} task types with both outcomes; ${r.failed} not right.`;
   }
   const Q = M.cues;
@@ -266,8 +286,18 @@ const REASON_COL = { twi_over_english: COL.tw, mixed_over_english: COL["en-tw"],
     showTip(ev, h);
   });
   cv.addEventListener("mouseleave", hideTip);
-  cv.addEventListener("click", ev => { const hit = at(ev); if (!hit) return; S.decision = hit[0]; if (hit[1] != null) S.neuron = hit[1]; drawMatrix(); renderDecision(); renderCircuit(); if (hit[1] != null) renderDashboard(hit[1]); });
+  cv.addEventListener("click", ev => { const hit = at(ev); if (!hit) return; S.decision = hit[0]; if (hit[1] != null) S.neuron = hit[1]; selectionChanged(); });
 })();
+
+// One place to refresh everything a selection drives; the inspector stays on its tab.
+function selectionChanged() {
+  drawMatrix(); renderDecision();
+  const tab = currentTab("insp");
+  if (tab === "circuit") renderCircuit();
+  if (S.neuron != null) renderDashboard(S.neuron);
+  if (tab === "replays") renderPair();
+  if (currentTab("view") === "map") drawMap(DATA.models[model].map);
+}
 
 // ---------- decision panel ----------
 async function decisionDetail(d) {
@@ -327,6 +357,70 @@ function controlsStrip(det, dd, n) {
   return `<div class="box"><h4>L${L}·${idx} (bar) against ${C} random directions at layer ${L} (dots) · ${S.margin} margin shift</h4>${g}</div>`;
 }
 
+// ---------- steered transcripts ----------
+let ST = { decision: null, setting: null };
+async function renderSteered(M) {
+  const T = M.steered, table = $("steered-table"), ctl = $("t-controls"), cmp = $("t-compare");
+  const any = Object.values(DATA.models).some(m => m.steered);
+  $("steered").hidden = !any; document.querySelectorAll('nav a[href="#steered"]').forEach(a => a.hidden = !any);
+  if (!T) { table.innerHTML = '<p class="def">Not run for this model.</p>'; ctl.innerHTML = ""; cmp.innerHTML = ""; return; }
+  const base = T.summary.unsteered;
+  const rate = c => (c && c.n ? c.right / c.n : null), harm = c => (c && c.n ? c.harmful / c.n : null);
+  const dpp = (a, b) => (a == null || b == null ? "" : `<span style="color:${a - b >= 0 ? COL.good : COL.harm}">${a - b >= 0 ? "+" : "−"}${Math.abs(Math.round(100 * (a - b)))}</span>`);
+  let h = `<table class="grid"><thead><tr><th>push</th><th>picked for</th>${ORDER.map(l => `<th style="color:${COL[l]};text-align:center" colspan="2">${LANG[l]}</th>`).join("")}</tr><tr><th></th><th></th>${ORDER.map(() => "<th>right Δ</th><th>harmful Δ</th>").join("")}</tr></thead><tbody>`;
+  for (const name of T.settings) {
+    const c = T.summary[name], dirName = name.replace(/ [+−][0-9.]+$/, ""), info = T.directions[dirName] || {};
+    h += `<tr data-setting="${esc(name)}" style="cursor:pointer"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? " · " + info.why : ""))}</td>${ORDER.map(l => {
+      const r = rate(c[l]), hm = harm(c[l]);
+      return `<td style="text-align:right">${pct(r)} ${name === "unsteered" ? "" : dpp(r, rate(base[l]))}</td><td style="text-align:right">${pct(hm)} ${name === "unsteered" ? "" : `<span style="color:${hm - harm(base[l]) > 0 ? COL.harm : COL.good}">${hm == null ? "" : (hm - harm(base[l]) >= 0 ? "+" : "−") + Math.abs(Math.round(100 * (hm - harm(base[l]))))}</span>`}</td>`;
+    }).join("")}</tr>`;
+  }
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${T.decisions.length / 3} tasks × 3 languages) × ${T.samples} replays per push · dose ${T.doses.join(", ")}</p>`;
+  table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { ST.setting = tr.dataset.setting; drawCompare(); });
+  ST.setting = ST.setting && T.settings.includes(ST.setting) ? ST.setting : T.settings[1];
+  ST.decision = ST.decision && T.decisions.includes(ST.decision) ? ST.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];
+  ctl.innerHTML = `<label class="def">decision<select id="t-dec">${T.decisions.map(d => `<option value="${esc(d)}" ${d === ST.decision ? "selected" : ""}>${esc(d.replace("eval/", "").replace("@", " · turn "))}</option>`).join("")}</select></label><label class="def">push<select id="t-set">${T.settings.filter(n => n !== "unsteered").map(n => `<option ${n === ST.setting ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
+  $("t-dec").onchange = e => { ST.decision = e.target.value; drawCompare(); };
+  $("t-set").onchange = e => { ST.setting = e.target.value; drawCompare(); };
+  drawCompare();
+}
+async function drawCompare() {
+  const cmp = $("t-compare"); cmp.innerHTML = '<p class="loading">Loading transcripts…</p>';
+  const data = await getJSON(`steered-${model}.json`);
+  if ($("t-set")) $("t-set").value = ST.setting;
+  const col = name => { const xs = ((data.results[name] || {})[ST.decision] || []).slice().sort((a, b) => a.sample - b.sample);
+    return `<div class="box"><h4>${esc(name)}</h4>${xs.map(x => replayCard(x)).join("") || '<p class="def">No replays.</p>'}</div>`; };
+  cmp.innerHTML = col("unsteered") + col(ST.setting);
+}
+function replayCard(x) {
+  const badge = x.error ? `<span class="chip">error</span>` : x.outcome === 1 ? `<span class="chip r">right</span>` : x.outcome === -1 ? `<span class="chip h">harmful</span>` : `<span class="chip">not right</span>`;
+  const body = (x.transcript || []).map(m => {
+    if (m.role === "verdict") return m.problems && m.problems.length ? `<div class="def">verdict: ${esc(m.problems.join("; "))}</div>` : "";
+    if (m.role === "assistant") return `<div style="margin:6px 0">${m.reasoning ? `<details><summary class="def">reasoning (${m.reasoning.length} chars)</summary><div class="text">${esc(m.reasoning)}</div></details>` : ""}${m.calls ? m.calls.map(c => `<div style="color:${/^(initiate|confirm)_transfer|^send_sms/.test(c) ? COL.harm : COL.ink}">→ ${esc(c)}</div>`).join("") : ""}${m.content ? `<div class="text" style="color:${COL.ink}">${esc(m.content)}</div>` : ""}</div>`;
+    if (m.role === "tool") return `<div class="def" style="margin-left:12px">${esc(m.name || "tool")}: ${esc((m.content || "").slice(0, 300))}</div>`;
+    if (m.role === "user") return `<div style="margin:4px 0;color:${COL.ink2}">user: ${esc(m.content || "")}</div>`;
+    return "";
+  }).join("");
+  return `<details class="replay" style="border-top:1px solid ${COL.grid};padding:6px 0"><summary>replay ${x.sample + 1} ${badge}</summary>${body}${x.error ? `<div class="def">${esc(x.error)}</div>` : ""}</details>`;
+}
+
+async function renderPair() {
+  const box = $("t-pair"), T = DATA.models[model].steered;
+  if (!T || !SM) { box.innerHTML = '<p class="def">No steered replays for this model.</p>'; return; }
+  const dd = S.decision != null ? SM.raw.decisions[S.decision] : null, nn = S.neuron != null ? SM.raw.neurons[S.neuron] : null;
+  const key = dd ? `${dd.id}@${dd.turn}` : null, name = nn ? `L${nn[0]}·${nn[1]}` : null;
+  const settings = name ? T.settings.filter(x => x.startsWith(name + " ")) : [];
+  if (key && T.decisions.includes(key) && settings.length) {
+    const data = await getJSON(`steered-${model}.json`);
+    box.innerHTML = ["unsteered", ...settings].map(sname => { const xs = ((data.results[sname] || {})[key] || []).slice().sort((a, b) => a.sample - b.sample); return `<div class="box"><h4>${esc(sname)}</h4>${xs.map(replayCard).join("") || '<p class="def">No replays.</p>'}</div>`; }).join("");
+    return;
+  }
+  const dirs = Object.keys(T.directions).filter(n => !n.startsWith("random"));
+  box.innerHTML = `<p class="def">${dd && name ? `No replays for ${esc(name)} at ${esc(dd.id)}.` : "Select a decision and neuron."} Replayed neurons (each at ${T.decisions.length} decisions):</p><div>${dirs.map(n => `<button class="chip" data-n="${esc(n)}" style="cursor:pointer;background:none;color:${COL.ink}">${esc(n)}</button>`).join("")}</div><p class="def">Replayed decisions:</p><div>${T.decisions.map(d => `<button class="chip" data-d="${esc(d)}" style="cursor:pointer;background:none;color:${COL[d.split("/")[2]] || COL.ink}">${esc(d.replace("eval/", "").replace("@", " · turn "))}</button>`).join("")}</div>`;
+  box.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { const [L, i] = b.dataset.n.slice(1).split("·").map(Number); const j = SM.raw.neurons.findIndex(x => x[0] === L && x[1] === i); if (j >= 0) { S.neuron = j; selectionChanged(); } });
+  box.querySelectorAll("[data-d]").forEach(b => b.onclick = () => { const [id, turn] = b.dataset.d.split("@"); const j = SM.raw.decisions.findIndex(x => x.id === id && String(x.turn) === turn); if (j >= 0) { S.decision = j; selectionChanged(); } });
+}
+
 // ---------- circuit ----------
 async function renderCircuit() {
   const svg = $("graph"); if (!DATA.models[model].steering) { svg.innerHTML = ""; $("g-controls").innerHTML = '<span class="def">Steering not run for this model.</span>'; return; }
@@ -334,11 +428,12 @@ async function renderCircuit() {
   const cols = visibleDecisions(m); if (S.decision == null || !cols.includes(S.decision)) S.decision = cols.length ? cols[0] : null;
   const D = m.raw.decisions;
   $("g-controls").innerHTML = `<label class="def">decision<select id="g-dec">${cols.slice(0, 600).map(d => `<option value="${d}" ${d === S.decision ? "selected" : ""}>${esc(D[d].id)} · ${KIND[D[d].kind]}</option>`).join("")}</select></label><label class="def">neurons<select id="g-k">${[12, 24, 48, 96].map(k => `<option ${k === S.K ? "selected" : ""}>${k}</option>`).join("")}</select></label><span class="def">push ${S.sign > 0 ? "up" : "down"} · ${m.raw.doses[S.dose]} · ${S.margin} margin (set above)</span>`;
-  $("g-dec").onchange = e => { S.decision = +e.target.value; renderCircuit(); drawMatrix(); renderDecision(); };
+  $("g-dec").onchange = e => { S.decision = +e.target.value; selectionChanged(); renderCircuit(); };
   $("g-k").onchange = e => { S.K = +e.target.value; renderCircuit(); };
   const d = S.decision; if (d == null) return;
   const ranked = [...Array(m.N).keys()].map(n => [n, ...cell(m, d, n)]).filter(r => !Number.isNaN(r[1])).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, S.K);
-  const W = svg.clientWidth || 900, H = svg.clientHeight || 640, layers = (DATA.models[model].map || { layers: 34 }).layers;
+  if (!svg.clientWidth) return; // hidden tab: drawn when shown
+  const W = svg.clientWidth, H = svg.clientHeight || 640, layers = (DATA.models[model].map || { layers: 34 }).layers;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const yOf = L => H - 40 - (H - 120) * (L / Math.max(1, layers - 1));
   const byLayer = {}; ranked.forEach(r => (byLayer[m.raw.neurons[r[0]][0]] ||= []).push(r));
@@ -377,7 +472,7 @@ async function renderCircuit() {
     const n = +el.dataset.n, [v, p] = cell(m, d, n), [L, i] = m.raw.neurons[n];
     el.addEventListener("mouseenter", ev => { svg.querySelectorAll(".edge,.wire").forEach(e => e.style.opacity = (e.dataset.n == n || e.dataset.a == n || e.dataset.b == n) ? 1 : 0.08); showTip(ev, `<b>L${L}·${i}</b> ${esc(REASON[m.reason[n]] || "")}<br>shift ${fx(v)} nats · ${p}th pct of random`); });
     el.addEventListener("mouseleave", () => { svg.querySelectorAll(".edge,.wire").forEach(e => e.style.opacity = 1); hideTip(); });
-    el.addEventListener("click", ev => { if (ev.metaKey || ev.ctrlKey) { S.pins = S.pins.includes(n) ? S.pins.filter(x => x !== n) : [...S.pins, n]; renderPins(); renderCircuit(); } else { S.neuron = n; renderDashboard(n); drawMatrix(); renderDecision(); location.hash = "neurons"; } });
+    el.addEventListener("click", ev => { if (ev.metaKey || ev.ctrlKey) { S.pins = S.pins.includes(n) ? S.pins.filter(x => x !== n) : [...S.pins, n]; renderPins(); renderCircuit(); } else { S.neuron = n; selectionChanged(); showTab("insp", "neuron"); } });
   });
   renderPins();
 }
@@ -448,6 +543,7 @@ async function openCard(L, n) {
   const idx = m ? m.raw.neurons.findIndex(x => x[0] === L && x[1] === n) : -1;
   S.neuron = idx >= 0 ? idx : null; S.neuronKey = [L, n];
   renderDashboard(idx >= 0 ? idx : null); drawMap(DATA.models[model].map); if (m) drawMatrix();
+  showTab("insp", "neuron");
 }
 let ctxLang = "en-tw";
 async function renderDashboard(n) {
@@ -506,7 +602,7 @@ function drawStrip(cv) {
   const cw = w / Math.max(1, cols.length);
   cols.forEach((d, c) => { const [v] = cell(SM, d, n); g.fillStyle = shiftColour(v); g.fillRect(c * cw, 0, Math.max(1, cw), 18); g.fillStyle = COL[SM.raw.decisions[d].language]; g.fillRect(c * cw, 20, Math.max(1, cw), 6); });
   cv.onmousemove = ev => { const b = cv.getBoundingClientRect(), c = Math.floor((ev.clientX - b.left) / cw); const d = cols[c]; if (d == null) return; const [v, p] = cell(SM, d, n); showTip(ev, `${esc(SM.raw.decisions[d].id)} · ${KIND[SM.raw.decisions[d].kind]}<br>shift ${fx(v)} · ${p}th pct`); };
-  cv.onmouseleave = hideTip; cv.onclick = ev => { const b = cv.getBoundingClientRect(), c = Math.floor((ev.clientX - b.left) / cw); if (cols[c] == null) return; S.decision = cols[c]; renderDecision(); drawMatrix(); renderCircuit(); location.hash = "steering"; };
+  cv.onmouseleave = hideTip; cv.onclick = ev => { const b = cv.getBoundingClientRect(), c = Math.floor((ev.clientX - b.left) / cw); if (cols[c] == null) return; S.decision = cols[c]; selectionChanged(); showTab("insp", "decision"); };
 }
 
 // ---------- anchors ----------
@@ -559,6 +655,7 @@ function stepMessages(ep) {
 }
 function selectStep(A, el) {
   document.querySelectorAll(".step.on").forEach(s => s.classList.remove("on")); el.classList.add("on");
+  showTab("anch", "step");
   const ep = A.find(a => a.task_id === el.dataset.task), i = +el.dataset.i, st = ep.steps[i];
   const out = (ep[linkKind] || []).filter(x => x[0] === i).sort((a, b) => b[2] - a[2]).slice(0, 6).map(x => `turn ${x[1]} (KL ${x[2].toFixed(3)})`);
   const range = stepMessages(ep)[i], sents = (ep.sentences || []).filter(s => s.message >= range[0] && s.message < range[1] && s.score != null);
@@ -567,13 +664,17 @@ function selectStep(A, el) {
   $("step-detail").innerHTML = `<div><b>${LANG[ep.task_id.split("/")[2]]} · step ${i} · ${esc(st.role)}${st.calls.length ? " · " + esc(st.calls.join(", ")) : ""}</b></div>${st.reasoning ? `<div><div class="def">reasoning</div><div class="text">${esc(st.reasoning)}</div></div>` : ""}${st.text ? `<div class="text">${esc(st.text)}</div>` : ""}${st.results.length ? `<div><div class="def">tool results</div><div class="text">${esc(st.results.join("\n"))}</div></div>` : ""}${out.length ? `<div class="def">${linkKind === "links" ? "deleting" : "blocking attention to"} this step moves: ${out.join(", ")}</div>` : ""}${shaded}`;
 }
 function renderKurtosis(M) {
-  const R = M.receivers; if (!R) { $("kurt").innerHTML = ""; return; }
-  const K = R.kurtosis, L = R.layers, H = K[0].length, c = 14, top = new Set(R.heads.slice(0, 20).map(h => h.layer + ":" + h.head));
+  const R = M.receivers, box = $("kurt"); if (!R) { box.innerHTML = ""; $("kurt-top").innerHTML = ""; return; }
+  const K = R.kurtosis, L = R.layers, H = K[0].length, top = new Map(R.heads.slice(0, 20).map((h, r) => [h.layer + ":" + h.head, r + 1]));
+  const avail = (box.parentElement.clientWidth || 600) - 260;
+  const c = Math.max(9, Math.min(26, Math.floor((avail - 48) / H)));
   const mx = Math.max(...K.flat().filter(v => v != null));
-  let g = `<svg viewBox="0 0 ${60 + H * c} ${L.length * c + 30}" width="${60 + H * c}" role="img">`;
-  L.forEach((layer, a) => { g += `<text x="50" y="${a * c + 11}" text-anchor="end">L${layer}</text>`; K[a].forEach((v, h) => { g += `<rect x="${56 + h * c}" y="${a * c}" width="${c - 1}" height="${c - 1}" fill="${v == null ? "#161616" : seqColour(Math.max(0, v) / mx)}" stroke="${top.has(layer + ":" + h) ? COL.ink : "none"}"><title>L${layer} head ${h}: kurtosis ${v == null ? "–" : v.toFixed(2)}</title></rect>`; }); });
-  for (let h = 0; h < H; h += 4) g += `<text x="${56 + h * c + 6}" y="${L.length * c + 14}" text-anchor="middle">${h}</text>`;
-  $("kurt").innerHTML = g + `<text x="${56 + H * c}" y="${L.length * c + 26}" text-anchor="end">head →</text></svg>`;
+  let g = `<svg viewBox="0 0 ${52 + H * c} ${L.length * c + 30}" width="${52 + H * c}" role="img" aria-label="Receiver-head kurtosis by layer and head">`;
+  L.forEach((layer, a) => { g += `<text x="44" y="${a * c + c * 0.72}" text-anchor="end">L${layer}</text>`; K[a].forEach((v, h) => { const r = top.get(layer + ":" + h); g += `<rect x="${50 + h * c}" y="${a * c}" width="${c - 1}" height="${c - 1}" fill="${v == null ? "#161616" : seqColour(Math.max(0, v) / mx)}" stroke="${r ? COL.good : "none"}" stroke-width="${r ? 1.5 : 0}"><title>L${layer} head ${h}: kurtosis ${v == null ? "–" : v.toFixed(2)}${r ? " · receiver #" + r : ""}</title></rect>`; }); });
+  for (let h = 0; h < H; h += Math.max(1, Math.round(32 / c))) g += `<text x="${50 + h * c + c / 2}" y="${L.length * c + 14}" text-anchor="middle">${h}</text>`;
+  g += `<text x="${50 + H * c}" y="${L.length * c + 27}" text-anchor="end">head →</text></svg>`;
+  box.innerHTML = `<div class="kurt-wrap"><div class="scroll">${g}</div><div><div class="def">top receiver heads</div><table class="grid">${R.heads.slice(0, 20).map((h, r) => `<tr><td class="def">${r + 1}</td><td>L${h.layer} · head ${h.head}</td><td style="text-align:right">${h.kurtosis.toFixed(1)}</td></tr>`).join("")}</table><p class="def">${R.turns} turns</p></div></div>`;
+  $("kurt-top").innerHTML = "";
 }
 
 // ---------- boot ----------
@@ -581,7 +682,7 @@ function render() {
   const M = DATA.models[model];
   document.querySelectorAll(".toggle button").forEach(b => b.setAttribute("aria-pressed", b.dataset.model === model));
   S.decision = null; S.neuron = null; S.pins = []; SM = null;
-  renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M);
+  renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M); renderSteered(M);
   $("dash").innerHTML = '<p class="def">Select a neuron on the map, in the steering matrix or in the circuit.</p>';
   $("decision").innerHTML = '<p class="def">Select a cell.</p>';
   drawMatrix().then(renderCircuit).catch(e => { $("s-legend").innerHTML = `<span class="def">Steering files not available (${esc(e.message)}).</span>`; });
