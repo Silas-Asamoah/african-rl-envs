@@ -104,46 +104,59 @@ tool calls and are left out. Our self-hosted Qwen reproduces its published hoste
    for Ministral, the turn that initiates the transfer moves the next turn by KL 1.5–1.8 in
    every Twi and Twi–English episode against at most 0.82 for any link in English.
 
-## Steering
+## Steering at every decision
 
-The steer lens, rebuilt from neuron-explorer for agents: at 60 scam decision points per model
-(the turn after the user's answer, 20 per language), keep the model's own reasoning, open a
-tool call and read the pay-versus-protect margin (log-sum-exp of the first tokens of
-initiate/confirm transfer minus report fraud, ask user, cancel); then push one neuron's write
-direction at that position by ±0.8 of the residual norm there and compare with 32 random
-directions per layer. 637 mapped neurons per model (the top three per layer on each score).
+The steer lens, rebuilt from neuron-explorer for agents and run on every task. Decisions: the
+first committing move of every episode, plus the turn after a transfer is initiated and the
+turn after the user's answer where the task has a rule for them; 10 seeds × 20 tasks × 3
+languages (Qwen 836 decisions, Ministral 877). At each, the model's own reasoning is kept and
+the probability of every move is read: reply, or each of the 17 tools, followed along its
+name's tokens. Each of 637 mapped neurons per model has its write direction added at the
+positions where the model chooses, at ±0.2, 0.4 and 0.8 of the residual norm there, against
+32 random directions per layer. Pushes are batched and checked against plain forward passes;
+each shift is measured from a zero push through the same route. Margins: the right move
+against all others (every decision with a rule: Qwen 776, Ministral 818), and harmful moves
+against all others (scam and injection decisions).
 
-| | margin, English | Twi | Twi–English |
+The right move is favoured before any push less often as the request gets more Twi:
+
+| | English | Twi–English | Twi |
 |---|---|---|---|
-| Qwen3.5-9B | −6.6 | −4.2 | −7.1 |
-| Ministral 3 8B | −1.5 | −2.6 | −0.1 |
+| Qwen3.5-9B | 77% | 71% | 64% |
+| Ministral 3 8B | 61% | 56% | 56% |
 
-Negative favours protecting. Qwen protects firmly, least so in Twi; Ministral sits near the
-edge, closest to paying in Twi–English.
+Share of neuron × decision pushes (both signs, dose 0.8) whose shift beats 97% of the random
+directions at the same layer, decision, sign and dose (by chance about 3%):
 
-Share of neurons whose push beats 97% of random pushes (by chance about 3–6%):
-
-| picked for | Qwen | Ministral |
+| picked for | Qwen en / en-tw / tw | Ministral en / en-tw / tw |
 |---|---|---|
-| switch tokens | 18% | 17% |
-| English word inside Twi–English | 15% | 7% |
-| Twi over English | 2% | 14% |
-| scam, end of request | 1% | 12% |
-| scam, at the action | 6% | 5% |
-| Twi–English over English | 8% | 5% |
-| language-specific | 9% | 5% |
+| switch tokens | 30 / 28 / 26% | 20 / 20 / 20% |
+| English word inside Twi–English | 19 / 19 / 18% | 18 / 18 / 18% |
+| Twi–English over English | 11 / 11 / 11% | 10 / 10 / 10% |
+| scam, end of request | 9 / 9 / 10% | 10 / 10 / 10% |
+| scam, at the action | 9 / 9 / 8% | 12 / 11 / 12% |
+| Twi over English | 9 / 9 / 10% | 16 / 16 / 16% |
+| language-specific | 7 / 8 / 8% | 11 / 12 / 11% |
+| all 637 | 14 / 13 / 13% | 14 / 14 / 14% |
 
-Neurons tied to code-switching move the decision more often than chance in both models.
-Ministral has clean two-way levers: layer 27 neuron 2472 (fires less on scams) moves it to
-paying when pushed up (+3.9 to +4.7) and to protecting when pushed down (−5.7 to −8.0, most on
-Twi–English); layer 16 neuron 2423 (an English-word-in-Twi–English neuron) moves it to
-protecting when pushed down (−5.9 to −8.5, most on Twi–English). Several of Qwen's strongest
-neurons move it towards paying whichever way they are pushed, which reads as disruption rather
-than a clean feature. Pushes of 0.8 of the residual norm are large; 32 controls per layer give
-percentiles in steps of about 3.
+Neurons that respond to code-switching move the decision more often than chance in both
+models, and more often than neurons picked for responding to scams; overall the rates are the
+same in every request language. Pushes at the last two layers beat random most often (24–30%)
+because those neurons write almost directly onto the tool-name tokens; Qwen's layers 21–29 move
+it least (5–6%). A few neurons act mainly on Twi and Twi–English decisions: Qwen layer 19
+neuron 4818 (English word inside Twi–English), pushed up, beats random on 43% of Twi–English
+and 52% of Twi decisions against 7% of English ones (mean shift −0.62, −0.54 and 0.00 nats);
+Qwen layer 0 neuron 6709 (Twi over English), pushed down, 36% / 47% / 7%. Ministral layers 28
+and 29 Twi-over-English neurons pushed up shift Twi–English decisions toward the right move by
++0.84 to +0.98 nats on average against +0.31 to +0.37 for English. Every neuron × decision ×
+dose, with the move distributions and the random baseline, is in the viewer.
 
 ## Methods and caveats
 
+- Steering decisions cover 10 of the 30 matched seeds. Six Ministral decisions are flagged:
+  there the batched route sat 0.26–0.48 nats from the plain pass on moves with at least 0.7%
+  probability, against 0.01–0.09 one token at a time. They are kept and marked in the viewer. Qwen's first 521 decisions were rebuilt from the
+  saved float16 arrays after a stalled run (shifts within ~0.02 nats of returned rows).
 - Probes: logistic regression (standardised, C = 0.1), five folds split by seed so twins never
   cross between training and test; probe results use the first 800 study episodes per model.
 - Read points: the end of the request, the last reasoning token and the first action token of
