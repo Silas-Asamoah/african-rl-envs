@@ -151,8 +151,8 @@ function lines(el, series, opts = {}) {
   let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(opts.label || "")}">`;
   for (let k = 0; k <= 4; k++) { const v = y0 + (y1 - y0) * k / 4; g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" fill="none"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${opts.yfmt ? opts.yfmt(v) : pct(v)}</text>`; }
   const step = n > 20 ? 8 : 4;
-  for (let i = 0; i < n; i += step) g += `<text x="${x(i)}" y="${H - 10}" text-anchor="middle">${opts.xs ? opts.xs[i] : i}</text>`;
-  g += `<text x="${W - m.r}" y="${H - 10}" text-anchor="end">${esc(opts.xlabel || "layer")}</text>`;
+  for (let i = 0; i < n; i += step) if (x(i) < W - m.r - 44) g += `<text x="${x(i)}" y="${H - 10}" text-anchor="middle">${opts.xs ? opts.xs[i] : i}</text>`;
+  g += `<text x="${W - m.r}" y="${H - 10}" text-anchor="end">${esc(opts.xlabel || "layer")} →</text>`;
   for (const s of series) {
     if (s.flat != null) { g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(s.flat)}" y2="${y(s.flat)}" stroke="${s.color}" stroke-width="1.5" stroke-dasharray="4 4" fill="none" opacity="0.8"/>`; continue; }
     const pts = s.values.map((v, i) => v == null || Number.isNaN(v) ? null : `${x(i)},${y(Math.max(y0, Math.min(y1, v)))}`).filter(Boolean).join(" ");
@@ -276,7 +276,7 @@ function lane(ep, l) {
 
 // ---------- neuron map ----------
 const MAPC = { twi_over_english: ["Twi over English", "div"], mixed_over_english: ["Twi–English over English", "div"], scam_at_request: ["scam, end of request", "seq"], scam_at_action: ["scam, at the action", "seq"], switch: ["switch tokens", "seq"], english_word_in_mix: ["English word inside Twi–English", "div"], language_specific: ["language-specific", "seq"] };
-let view = { yaw: -0.6, pitch: 0.35 }, pts = [], picked = null;
+let view = { yaw: -0.95, pitch: 0.45 }, pts = [], picked = null;
 function colourFor(key, v) {
   const t = Math.max(-1, Math.min(1, v / 60));
   if (MAPC[key] && MAPC[key][1] === "div") return t >= 0 ? `rgba(217,89,38,${0.25 + 0.75 * t})` : `rgba(57,135,229,${0.25 + 0.75 * -t})`;
@@ -297,8 +297,8 @@ function renderMap(M) {
 function project(p, layers, w, h) {
   const z = (p.L / Math.max(1, layers - 1)) * 2 - 1;
   const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw), cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
-  let X = p.x * cy + z * 1.6 * sy, Z = -p.x * sy + z * 1.6 * cy, Y = p.y * cp - Z * sp; Z = p.y * sp + Z * cp;
-  const s = Math.min(w, h) * 0.34 / (1 + Z * 0.18);
+  let X = p.x * cy + z * 1.1 * sy, Z = -p.x * sy + z * 1.1 * cy, Y = p.y * cp - Z * sp; Z = p.y * sp + Z * cp;
+  const s = Math.min(w, h) * 0.3 / (1 + Z * 0.15);
   return [w / 2 + X * s, h / 2 - Y * s, Z];
 }
 function drawMap(map) {

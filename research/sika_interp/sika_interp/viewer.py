@@ -153,7 +153,7 @@ def neuron_map(maps: Path, key: str, background: int = 24000, seed: int = 0) -> 
     flat = rng.choice(layers * width, size=min(background, layers * width), replace=False)
     chosen = sorted(set(flat.tolist()) | {c["layer"] * width + c["neuron"] for c in cards})
     L, N = np.divmod(np.array(chosen), width)
-    scale = np.abs(places).reshape(layers, -1).max(1) + 1e-6
+    scale = np.percentile(np.abs(places).reshape(layers, -1), 98, axis=1) + 1e-6  # outliers clip to the edge
     xy = np.clip(places[L, N] / scale[L, None] * 127, -127, 127).astype(int)
     scores = {k: np.clip(np.nan_to_num(z[k].astype(np.float32)[L, N]) * 20, -127, 127).astype(int).tolist() for k in score_names}
     return {
@@ -223,7 +223,9 @@ def main() -> None:
     print(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.1f} MB)")
     if args.page:
         template = (Path(__file__).resolve().parent.parent / "viewer" / "template.html").read_text()
-        args.page.write_text(template.replace("/*DATA*/", text.replace("</", "<\\/")))
+        # Partial-byte tokens decode to U+FFFD; keep them as JSON escapes, not raw characters.
+        inline = text.replace("</", "<\\/").replace("\ufffd", "\\ufffd")
+        args.page.write_text(template.replace("/*DATA*/", inline))
         print(f"wrote {args.page}")
 
 
