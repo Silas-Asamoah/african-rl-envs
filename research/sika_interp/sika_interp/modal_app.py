@@ -13,6 +13,7 @@ Versions match the vLLM install on the Prime pod (torch 2.13, transformers 5.19)
 """
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import modal
@@ -31,6 +32,9 @@ image = (
         "huggingface_hub",
         "numpy",
         "scikit-learn",
+        # Qwen3.5's linear-attention layers: the optimised kernels instead of transformers'
+        # slow reference code (same maths; vLLM serves Qwen with kernels of this kind).
+        "flash-linear-attention==0.5.2",
     )
     .env({"HF_HOME": "/cache/hf"})
     # The environment itself, for the word tagger (wording pools, names, system prompt).
@@ -478,6 +482,138 @@ class Model:
             results["decisions"].append({k: d[k] for k in ("task_id", "language", "index")} | {"margin": round(base, 4)})
         return results
 
+    def action_prefix(self, d: dict) -> dict:
+        """The model's turn at decision `d` rendered with its own reasoning, then either a call
+        to each tool (arguments "{}") or a reply: `renders` maps each tool to its token ids,
+        `reply` is the reply's. `Pushes` works out where they part ways."""
+        reasoning = d["response"].get("reasoning_content") or ""
+
+        def calling(name: str) -> list[int]:
+            call = {"id": "call_0", "type": "function", "function": {"name": name, "arguments": "{}"}}
+            return self.render_turn(d["messages"], d["tools"], {"reasoning_content": reasoning, "tool_calls": [call]})[1]
+
+        renders = {tool["function"]["name"]: calling(tool["function"]["name"]) for tool in d["tools"]}
+        reply = self.render_turn(d["messages"], d["tools"], {"reasoning_content": reasoning, "content": "zzplaceholderzz"})[1]
+        return {"renders": renders, "reply": reply}
+
+    @modal.method()
+    def steer_moves(
+        self, run: str, decisions: list[dict], neurons: list[list[int]], controls: int, doses: list[float],
+        seed: int = 0, diagnose: bool = False,
+    ) -> list[dict]:
+        """The steer lens over every move, at any decision. For each decision: the log-probability
+        of replying and of each tool (read along the tools' name tokens: `Pushes`), unsteered and
+        with one push added at the positions where the model chooses: each listed neuron's
+        output direction, and `controls` random directions per layer used, at ±each dose × the
+        residual norm leaving the layer there. Full arrays go to the volume under
+        steer/<run>/<model>/; returns per-decision margins (right moves − wrong moves), with the
+        directions (kind, layer, index) on the first row.
+
+        Pushes are batched. The first decision tries each batching way against plain forward
+        passes and keeps the first whose zero-push numbers match (moves with probability at
+        least e^-5 within 0.25 nats, the bf16 floor); every later decision repeats that check
+        for the way kept and records it. Shifts are measured from a zero push done the same way.
+        `diagnose` runs only the checks, every way, on every decision."""
+        import time
+
+        import numpy as np
+        import torch
+
+        rng = np.random.default_rng(seed)
+        used = sorted({layer for layer, _ in neurons})
+        width = self.model.config.get_text_config().hidden_size
+        meta = [("neuron", layer, i) for layer, i in neurons]
+        vecs = [self.layers[layer].mlp.down_proj.weight[:, i].float() for layer, i in neurons]
+        for layer in used:  # same draws, in the same order, as `steer`
+            for c in range(controls):
+                meta.append(("control", layer, c))
+                vecs.append(torch.tensor(rng.standard_normal(width), dtype=torch.float32))
+        directions = torch.stack([v.to("cuda") / v.norm() for v in vecs])
+        rows = [(j, s, k) for j in range(len(meta)) for s in (-1, 1) for k in range(len(doses))]
+        folder = Path("/cache/steer") / run / self.model_id.split("/")[-1]
+        folder.mkdir(parents=True, exist_ok=True)
+        layer_types = getattr(self.model.config.get_text_config(), "layer_types", None) or []
+        order = ["tiled", "tiled-stepwise"]
+        if all(t == "full_attention" for t in layer_types):
+            order = ["siblings", "siblings+cache_position"] + order
+
+        def ok(check: dict) -> bool:
+            # Every way, one-token-at-a-time included, lands up to ~0.16 nats from the plain
+            # passes on minority moves (bf16 rounding); shifts are taken from a zero push done
+            # the same way, so a way is kept if it stays within that floor.
+            return "likely" in check and check["likely"] < 0.25
+
+        way, out = None, []
+        for d in decisions:
+            started = time.time()
+            at = Pushes(self, d, used, [m[1] for m in meta], directions, doses)
+            row = {k: d[k] for k in ("task_id", "family", "category", "language", "seed", "kind", "index", "reward", "took", "rule")}
+            with at.hooked(), torch.no_grad():
+                if diagnose:
+                    row["checks"] = {w: at.check(w) for w in order}
+                    out.append(row | at.summary(None) | {"seconds": round(time.time() - started, 1)})
+                    continue
+                checks = {}
+                for candidate in [way] if way else order:
+                    checks[candidate] = at.check(candidate)
+                    if ok(checks[candidate]):
+                        way = candidate
+                        break
+                if not ok(checks.get(way, {})):
+                    raise RuntimeError(f"no batched way matches the plain passes at {d['task_id']}: {checks}")
+                effects, zero = at.run(way, rows)
+                effects, zero = effects.view(len(meta), 2, len(doses), -1).numpy(), zero.numpy()
+            row |= at.summary(effects, zero)
+            name = f"{d['task_id'].replace('/', '_')}_{d['kind']}.npz"
+            np.savez_compressed(folder / name, base=at.base, zero=zero, effects=effects.astype(np.float16), labels=np.array(at.labels))
+            row |= {"saved": name, "seconds": round(time.time() - started, 1), "way": way, "checks": checks, "batch": at.batch(way)}
+            out.append(row)
+        cache.commit()
+        return [dict(r, directions=meta) if i == 0 else r for i, r in enumerate(out)]
+
+    @modal.method()
+    def profile_moves(self, d: dict, neurons: list[list[int]], way: str, repeats: int = 3) -> dict:
+        """Seconds spent in each part of one batch of pushes at decision `d`, for tuning."""
+        import copy
+        import time
+
+        import torch
+
+        used = sorted({layer for layer, _ in neurons})
+        directions = torch.stack([self.layers[l].mlp.down_proj.weight[:, i].float().cuda() for l, i in neurons])
+        directions = directions / directions.norm(dim=1, keepdim=True)
+        at = Pushes(self, d, used, [l for l, _ in neurons], directions, [0.8])
+        n = at.batch(way)
+        rows = [(j % len(neurons), 1, 0) for j in range(n)]
+        times: dict[str, list[float]] = {}
+
+        def timed(name, fn):
+            torch.cuda.synchronize()
+            t0 = time.time()
+            out = fn()
+            torch.cuda.synchronize()
+            times.setdefault(name, []).append(round(time.time() - t0, 4))
+            return out
+
+        with at.hooked(), torch.no_grad():
+            for _ in range(repeats):
+                full = timed("fill", lambda: at.fill(rows, n))
+                cache = timed("tile", lambda: _tile(at.head, n))
+                at.cur = {i: f[:, : at.S] for i, f in full.items()}
+                ids = torch.tensor([at.tail] * n, device="cuda")
+                logits = timed("tail_forward", lambda: self.model(input_ids=ids, past_key_values=cache, use_cache=True).logits[:, -1])
+                c = timed("node_copy", lambda: copy.deepcopy(cache))
+                at.cur = {i: f[:, at.S : at.S + 1] for i, f in full.items()}
+                tok = torch.full((n, 1), at.nodes[0][-1], device="cuda")
+                logits = timed("node_forward", lambda: self.model(input_ids=tok, past_key_values=c, use_cache=True).logits[:, -1])
+                timed("move_logp", lambda: at.move_logp(logits, logits, [logits] * at.K))
+                del cache, c, logits
+                timed("whole_batch", lambda: at.pushed(way, rows, n))
+                times.setdefault("peak_gb", []).append(round(torch.cuda.max_memory_allocated() / 1e9, 1))
+        per = sum(t.numel() * t.element_size() for _, _, t in _tensors(at.head) if t.dim() > 0 and t.shape[0] == 1)
+        kinds = sorted({type(t).__name__ for t in [at.head]} | {type(x).__name__ for x in getattr(at.head, "layers", [])})
+        return {"batch": n, "S": at.S, "K": at.K, "prompt": at.prompt_tokens, "cache_mb_per_copy": round(per / 1e6, 1),
+                "cache_types": kinds, "seconds": times}
 
     def turn_logprobs(self, messages: list[dict], tools: list[dict], response: dict):
         """Log-probabilities over the vocabulary at each token of `response` (reasoning and
@@ -547,6 +683,329 @@ class Model:
             )
         turn_step = [next(i for i, g in enumerate(steps) if g[0] == len(t["messages"])) for t in turns_]
         return {"task_id": episode["task_id"], "steps": described, "turn_step": turn_step, "links": links, "skipped": skipped}
+
+
+class Pushes:
+    """One decision for `Model.steer_moves`. The model chooses over a few positions: the token
+    before a tool call and a reply part ways (reply or call), then the tool's name, read token
+    by token along `decisions.name_trie` until each tool is told apart. The `tail` runs from
+    the first of these to the end of the shared prefix; trie `nodes` add one token each.
+    Unsteered numbers come from plain forward passes of the whole sequence; pushed ones from
+    batched passes after a shared cache of the prefix.
+
+    Ways to batch n pushes:
+    - "siblings": the n copies of tail and nodes run as one sequence after the cache, each
+      copy masked from the others and given its own positions (a tree inside each copy).
+      Needs full attention in every layer: a recurrent layer would carry one copy into the next.
+    - "tiled": the cache copied n times along the batch, the tail fed at once, each node then
+      fed from a copy of its parent's cache; "tiled-stepwise" feeds the tail a token at a time."""
+
+    def __init__(self, owner: "Model", d: dict, used: list[int], dir_layer: list[int], directions, doses: list[float]):
+        import torch
+
+        from sika_interp.decisions import REPLY, name_trie
+
+        self.m, self.d, self.used, self.dir_layer, self.directions, self.doses = owner, d, used, dir_layer, directions, doses
+        self.width = directions.shape[1]
+        ap = owner.action_prefix(d)
+        trie = name_trie(ap["renders"], ap["reply"])
+        self.trie = trie
+        cut, open_at = trie["cut"], trie["open_at"]
+        prefix = ap["renders"][sorted(ap["renders"])[0]][:cut]
+        self.L = open_at - 1 if open_at is not None else cut - 1
+        self.tail, self.prompt_tokens = prefix[self.L :], cut
+        self.S, self.K = len(self.tail), len(trie["nodes"])
+        self.nodes = trie["nodes"]
+        self.parent = [self.nodes.index(n[:-1]) if len(n) > 1 else -1 for n in self.nodes]
+        self.labels = [REPLY] + list(trie["labels"])
+        self.groups = {k: v["members"] for k, v in trie["labels"].items()}
+        self.cur: dict[int, torch.Tensor] = {}
+        # Unsteered: plain passes over the prefix and over the prefix plus each node's tokens,
+        # recording the residual norm leaving each used layer at the tail (pushes scale by it).
+        self.norms: dict[int, torch.Tensor] = {}
+        handles = [owner.layers[i].register_forward_hook(self._measure(i)) for i in used]
+        with torch.no_grad():
+            # Only the last positions' logits: the whole prompt's would be ~1.5 GB per pass.
+            logits = owner.model(input_ids=torch.tensor([prefix], device="cuda"), logits_to_keep=self.S).logits[0]
+            for h in handles:
+                h.remove()
+            at_nodes = [
+                owner.model(input_ids=torch.tensor([prefix + list(n)], device="cuda"), logits_to_keep=1).logits[0]
+                for n in self.nodes
+            ]
+            self.truth = self.move_logp(logits[:1], logits[-1:], at_nodes)[0]
+            self.head = owner.model(input_ids=torch.tensor([prefix[: self.L]], device="cuda"), use_cache=True).past_key_values
+        self.base = self.truth.cpu().numpy()
+
+    def _measure(self, i: int):
+        def hook(module, args, output):
+            hidden = output[0] if isinstance(output, tuple) else output
+            self.norms[i] = hidden[0, -self.S :].float().norm(dim=-1)
+
+        return hook
+
+    def _add(self, i: int):
+        def hook(module, args, output):
+            hidden = output[0] if isinstance(output, tuple) else output
+            hidden = hidden + self.cur[i].to(hidden.dtype).reshape(hidden.shape)
+            return (hidden,) + tuple(output[1:]) if isinstance(output, tuple) else hidden
+
+        return hook
+
+    @contextmanager
+    def hooked(self):
+        handles = [self.m.layers[i].register_forward_hook(self._add(i)) for i in self.used]
+        try:
+            yield
+        finally:
+            for h in handles:
+                h.remove()
+
+    def move_logp(self, first, root, at_nodes):
+        """Log-probabilities of [reply, each label] from the logits ([b, vocab]) where the tool
+        call opens, at the end of the tail, and at each trie node."""
+        import torch
+
+        lsm = [torch.log_softmax(x.float(), -1) for x in at_nodes]
+        lsm_root = torch.log_softmax(root.float(), -1)
+        cols = []
+        for label in self.labels[1:]:
+            total = 0
+            for node, token in self.trie["labels"][label]["steps"]:
+                total = total + (lsm_root if node < 0 else lsm[node])[:, token]
+            cols.append(total)
+        names = torch.stack(cols, 1)
+        if self.trie["open_at"] is None:
+            return torch.cat([torch.full_like(names[:, :1], float("-inf")), names], 1)
+        opened = torch.log_softmax(first.float(), -1)[:, self.trie["opener"]]
+        reply = torch.log1p(-opened.exp().clamp(max=1 - 1e-6))
+        return torch.cat([reply[:, None], opened[:, None] + names], 1)
+
+    def fill(self, chunk: list[tuple[int, int, int]], n: int) -> dict:
+        """Per layer, each of `n` slots' push at the tail and node positions ([n, S+K, width]);
+        nodes get the push scaled by the norm at the end of the tail. Unused slots get none."""
+        import torch
+
+        full = {i: torch.zeros(n, self.S + self.K, self.width, device="cuda") for i in self.used}
+        for b, (j, s, k) in enumerate(chunk):
+            i = self.dir_layer[j]
+            scale = torch.cat([self.norms[i], self.norms[i][-1:].expand(self.K)])
+            full[i][b] = (s * self.doses[k]) * scale[:, None] * self.directions[j][None, :]
+        return full
+
+    def batch(self, way: str) -> int:
+        """Pushes per pass. Siblings add only n×(S+K) tokens to one shared cache. Tiling holds
+        the tiled cache, its copy for the trie nodes (K times over when they run as one pass)
+        and the extension each pass adds: about (1 + 2K) copies at the peak."""
+        import torch
+
+        total = torch.cuda.get_device_properties(0).total_memory
+        free = total - torch.cuda.memory_allocated() - 6e9
+        if way.startswith("siblings"):
+            return 384 if total > 60e9 else 128
+        per = sum(t.numel() * t.element_size() for _, _, t in _tensors(self.head) if t.dim() > 0 and t.shape[0] == 1)
+        copies = 1 + 2 * max(self.K, 1) if self.flat_nodes else 4
+        return max(1, min(256, int(free // (copies * max(per, 1)))))
+
+    @property
+    def flat_nodes(self) -> bool:
+        """Every trie node hangs off the end of the tail, so they can run as one pass."""
+        return all(p < 0 for p in self.parent)
+
+    def pushed(self, way: str, chunk: list[tuple[int, int, int]], n: int):
+        """[n, labels] move log-probabilities with the chunk's pushes."""
+        import copy
+
+        import torch
+
+        full = self.fill(chunk, n)
+        S, K, L, model = self.S, self.K, self.L, self.m.model
+        if way.startswith("siblings"):
+            B = S + K
+            ids = torch.tensor([(self.tail + [n_[-1] for n_ in self.nodes]) * n], device="cuda")
+            depth = [L + S - 1 + len(node) for node in self.nodes]
+            pos = torch.tensor([L + p for p in range(S)] + depth, device="cuda").repeat(n)[None]
+            inner = torch.zeros(B, B, dtype=torch.bool, device="cuda")
+            inner[:S, :S] = torch.ones(S, S, dtype=torch.bool, device="cuda").tril()
+            for a in range(K):
+                inner[S + a, :S] = True
+                inner[S + a, S + a] = True
+                up = self.parent[a]
+                while up >= 0:
+                    inner[S + a, S + up] = True
+                    up = self.parent[up]
+            allowed = torch.zeros(n * B, L + n * B, dtype=torch.bool, device="cuda")
+            allowed[:, :L] = True
+            for b in range(n):
+                allowed[b * B : (b + 1) * B, L + b * B : L + (b + 1) * B] = inner
+            dtype = next(model.parameters()).dtype
+            mask = torch.zeros(1, 1, n * B, L + n * B, dtype=dtype, device="cuda").masked_fill_(~allowed, torch.finfo(dtype).min)
+            kwargs = {"position_ids": pos, "attention_mask": mask}
+            if way == "siblings+cache_position":
+                kwargs["cache_position"] = torch.arange(L, L + n * B, device="cuda")
+            self.cur = full
+            logits = model(input_ids=ids, past_key_values=copy.deepcopy(self.head), use_cache=True, **kwargs).logits[0].view(n, B, -1)
+            return self.move_logp(logits[:, 0], logits[:, S - 1], [logits[:, S + a] for a in range(K)])
+        cache = _tile(self.head, n)
+        ids = torch.tensor([self.tail] * n, device="cuda")
+        if way == "tiled":
+            self.cur = {i: f[:, :S] for i, f in full.items()}
+            logits = model(input_ids=ids, past_key_values=cache, use_cache=True).logits
+            first, root = logits[:, 0], logits[:, -1]
+        else:
+            for p in range(S):
+                self.cur = {i: f[:, p : p + 1] for i, f in full.items()}
+                logits = model(input_ids=ids[:, p : p + 1], past_key_values=cache, use_cache=True).logits[:, -1]
+                first = logits if p == 0 else first
+            root = logits
+        if K and self.flat_nodes:
+            # All nodes in one pass: each slot's cache repeated K times, one node token per copy.
+            wide = _rebatch(cache, n, lambda t: t.repeat_interleave(K, dim=0))
+            self.cur = {i: f[:, S:].reshape(n * K, 1, -1) for i, f in full.items()}
+            toks = torch.tensor([[node[-1]] for node in self.nodes] * n, device="cuda")
+            out = model(input_ids=toks, past_key_values=wide, use_cache=True).logits[:, -1].view(n, K, -1)
+            return self.move_logp(first, root, [out[:, a] for a in range(K)])
+        at_nodes, caches = [], {}
+        for a, node in enumerate(self.nodes):
+            # Each node continues a fresh copy of its parent's cache (feeding a token extends it).
+            c = copy.deepcopy(cache if self.parent[a] < 0 else caches[self.parent[a]])
+            self.cur = {i: f[:, S + a : S + a + 1] for i, f in full.items()}
+            tok = torch.full((n, 1), node[-1], device="cuda")
+            at_nodes.append(model(input_ids=tok, past_key_values=c, use_cache=True).logits[:, -1])
+            if a in self.parent:
+                caches[a] = c
+        return self.move_logp(first, root, at_nodes)
+
+    def check(self, way: str) -> dict:
+        """How far a zero-push batch done this way lands from the plain passes: the largest gap
+        over moves the model gives at least e^-5 and at least e^-10; or the error."""
+        try:
+            got = self.pushed(way, [], min(self.batch(way), 8))
+        except Exception as e:  # noqa: BLE001 - a way the model's code doesn't support
+            return {"error": f"{type(e).__name__}: {e}"[:300]}
+        gap = (got - self.truth[None]).abs().max(0).values
+        return {
+            "likely": float(gap[self.truth > -5].max()),
+            "plausible": float(gap[self.truth > -10].max()),
+            "worst_move": self.labels[int(torch_argmax(gap, self.truth > -10))],
+        }
+
+    def run(self, way: str, rows: list[tuple[int, int, int]]):
+        """Every row's pushed move log-probabilities, and a zero push done the same way: shifts
+        are measured from it, so rounding differences between this way and the plain passes
+        (bf16; up to ~0.15 nats on minority moves) cancel."""
+        import torch
+
+        n = self.batch(way)
+        zero = self.pushed(way, [], n)[0].cpu()
+        effects = torch.empty(len(rows), len(self.labels))
+        for c0 in range(0, len(rows), n):
+            chunk = rows[c0 : c0 + n]
+            effects[c0 : c0 + len(chunk)] = self.pushed(way, chunk, n)[: len(chunk)].cpu()
+        return effects, zero
+
+    def summary(self, effects, zero=None) -> dict:
+        """What the local side keeps: moves, the unsteered numbers (plain passes), and for each
+        margin the decision's rule defines (`decisions.margin_sides`) its unsteered value and
+        each push's shift of it from the zero push ([directions, signs, doses])."""
+        import numpy as np
+
+        from sika_interp.decisions import margin_sides
+
+        out = {
+            "labels": self.labels,
+            "groups": self.groups,
+            "base": [round(float(x), 4) for x in self.base],
+            "tail": self.m.tok.decode(self.tail),
+            "nodes": [self.m.tok.decode(list(n)) for n in self.nodes],
+            "prompt_tokens": self.prompt_tokens,
+            "tail_tokens": self.S,
+        }
+        for name, (a, b) in margin_sides(self.labels, self.groups, self.d["rule"]).items():
+            base = np.logaddexp.reduce(self.base[a]) - np.logaddexp.reduce(self.base[b])
+            out[f"{name}_margin"] = round(float(base), 4)
+            if effects is not None:
+                z = np.asarray(zero)
+                start = np.logaddexp.reduce(z[a]) - np.logaddexp.reduce(z[b])
+                pushed = np.logaddexp.reduce(effects[..., a], -1) - np.logaddexp.reduce(effects[..., b], -1)
+                out[f"{name}_shift"] = np.round(pushed - start, 3).tolist()  # [directions, signs, doses]
+                out[f"{name}_route_gap"] = round(float(start - base), 4)
+        return out
+
+
+def torch_argmax(values, where) -> int:
+    """Index of the largest of `values` where `where` holds."""
+    import torch
+
+    return int(torch.where(where, values, torch.full_like(values, -1.0)).argmax())
+
+
+def _tensors(obj, seen: set | None = None):
+    """(holder, key, tensor) for every tensor inside a cache object."""
+    import torch
+
+    seen = set() if seen is None else seen
+    if id(obj) in seen:
+        return
+    seen.add(id(obj))
+    if isinstance(obj, dict):
+        items = list(obj.items())
+    elif isinstance(obj, list):
+        items = list(enumerate(obj))
+    elif hasattr(obj, "__dict__") and type(obj).__module__.startswith("transformers"):
+        items = list(vars(obj).items())
+    else:
+        return
+    for key, value in items:
+        if torch.is_tensor(value):
+            yield obj, key, value
+        else:
+            yield from _tensors(value, seen)
+
+
+def _rebatch(cache, batch: int, fn):
+    """A copy of a cache with `fn` applied to every tensor whose first dimension is the batch
+    (size `batch`); the other objects are copied as they are."""
+    import copy
+
+    keep = {id(t): t for _, _, t in _tensors(cache) if t.dim() > 0 and t.shape[0] == batch}
+    # Seeding deepcopy's memo with None skips copying the batch tensors (they are replaced
+    # below), so a large cache is copied once, by `fn`, not twice.
+    out = copy.deepcopy(cache, {i: None for i in keep})
+    _replace_none(out, cache, keep, fn)
+    return out
+
+
+def _replace_none(copied, original, keep: dict, fn, seen: set | None = None) -> None:
+    """Walk `copied` alongside `original`; where `original` holds a batch tensor, put fn(it)."""
+    import torch
+
+    seen = set() if seen is None else seen
+    if id(original) in seen:
+        return
+    seen.add(id(original))
+    if isinstance(original, dict):
+        pairs = [(k, original[k], copied[k]) for k in original]
+    elif isinstance(original, list):
+        pairs = [(k, original[k], copied[k]) for k in range(len(original))]
+    elif hasattr(original, "__dict__") and type(original).__module__.startswith("transformers"):
+        pairs = [(k, v, getattr(copied, k)) for k, v in vars(original).items()]
+    else:
+        return
+    for key, o, c in pairs:
+        if torch.is_tensor(o) and id(o) in keep:
+            value = fn(o)
+            if isinstance(copied, (dict, list)):
+                copied[key] = value
+            else:
+                setattr(copied, key, value)
+        elif not torch.is_tensor(o):
+            _replace_none(c, o, keep, fn, seen)
+
+
+def _tile(cache, n: int):
+    """A copy of a batch-1 cache repeated n times along the batch."""
+    return _rebatch(cache, 1, lambda t: t.expand(n, *t.shape[1:]).contiguous())
 
 
 PAY = ("initiate_transfer", "confirm_transfer")
@@ -1081,6 +1540,67 @@ def steer_run(traces: str, run: str, model: str, per_language: int = 20, control
     for r in strongest:
         print(f"  L{r['layer']:>2} n{r['neuron']:<6} push up {r['push+']:+.2f} ({r['push+_percentile']:.0f}th pct)  push down {r['push-']:+.2f} ({r['push-_percentile']:.0f}th pct)")
     print(f"saved {out}")
+
+
+@app.local_entrypoint()
+def steer_all(
+    traces: str,
+    run: str,
+    model: str,
+    seeds: str = "1000000,1000001,1000006",
+    doses: str = "0.2,0.4,0.8",
+    controls: int = 32,
+    containers: int = 4,
+    limit: int = 0,
+    out: str = "",
+    diagnose: bool = False,
+    gpu: str = "L40S",
+):
+    """`steer_moves` for every candidate neuron on `model`'s map (map run `run`), at the
+    decisions of every task family in the episodes with these seeds (all three languages):
+    every first move, plus the later decisions that have right and wrong moves. `limit`
+    keeps that many decisions, spread over families and languages, for timing a slice;
+    `diagnose` only checks the batching ways against plain passes. Saves a JSON of every
+    decision's margins and shifts locally."""
+    import time
+
+    from sika_interp.decisions import collect
+
+    started = time.time()
+    picked = [list(n) for n in sorted({(c["layer"], c["neuron"]) for c in cards_of.remote(run, model)})]
+    found = collect(traces.split(","), model, [int(s) for s in seeds.split(",")])
+    chosen = [d for d in found if d["kind"] == "first_move" or d["rule"] is not None]
+    if limit:
+        step = max(1, len(chosen) // limit)
+        chosen = chosen[::step][:limit]
+    doses_ = [float(x) for x in doses.split(",")]
+    per = -(-len(chosen) // containers)
+    calls = [
+        Model.with_options(gpu=gpu)(model_id=model).steer_moves.spawn(run, chosen[i : i + per], picked, controls, doses_, diagnose=diagnose)
+        for i in range(0, len(chosen), per)
+    ]
+    rows = [r for call in calls for r in call.get()]
+    directions = next(r.pop("directions") for r in rows if "directions" in r)
+    for r in rows:
+        r.pop("directions", None)
+    result = {"model": model, "run": run, "doses": doses_, "signs": [-1, 1], "controls_per_layer": controls,
+              "directions": directions, "decisions": rows}
+    path = Path(out or f"steer-all-{run}-{model.split('/')[-1]}.json")
+    path.write_text(json.dumps(result))
+    seconds = [r["seconds"] for r in rows]
+    print(f"{model}: {len(rows)} decisions in {len(calls)} containers, {time.time() - started:.0f}s wall")
+    if diagnose:
+        for r in rows:
+            print(f"  {r['task_id']} {r['kind']}: labels {len(r['labels'])} nodes {r['nodes']}")
+            for w, c in r["checks"].items():
+                print(f"    {w:24} {c}")
+        print(f"saved {path}")
+        return
+    print(f"  way {rows[0]['way']}  checks {rows[0]['checks']}  batch {rows[0]['batch']}")
+    print(f"  per decision: mean {sum(seconds) / len(seconds):.1f}s, max {max(seconds):.1f}s; GPU-seconds {sum(seconds):.0f}")
+    for r in rows[:6]:
+        print(f"  {r['task_id']} {r['kind']}: right {r.get('right_margin')} harm {r.get('harm_margin')}  prompt {r['prompt_tokens']} tail {r['tail_tokens']} labels {len(r['labels'])} nodes {r['nodes']}")
+    print(f"saved {path}")
 
 
 @app.local_entrypoint()
