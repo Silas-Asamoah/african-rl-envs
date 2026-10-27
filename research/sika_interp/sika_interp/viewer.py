@@ -217,9 +217,9 @@ def placement_outcome(runs: Path, key: str, permutations: int = 4000, seed: int 
 
 
 def anchors(runs: Path, key: str) -> list[dict]:
-    """Each replayed episode: its steps, the resampling importance of its model turns, the
-    step-to-turn links by deletion and by attention blocking, and the receiver heads' score
-    for every sentence of its last turn."""
+    """Each replayed episode: its steps, the resampling importance of its model turns, its own
+    grade (the outcome once its last turn is kept), the step-to-turn links by deletion and by
+    attention blocking, and the receiver heads' score for every sentence of its last turn."""
     resampled = _read(runs / "anchors" / f"anchors-{key}.json")
     links = _read(runs / "anchors" / f"anchors-links-{MODELS[key]['name']}.json")
     if not resampled or not links:
@@ -227,6 +227,7 @@ def anchors(runs: Path, key: str) -> list[dict]:
     blocked = {r["task_id"]: r for r in _read(runs / SOURCES["suppress"].format(key=key)) or []}
     receivers = _read(runs / SOURCES["receivers"].format(key=key)) or {"items": []}
     last = {it["task_id"]: it for it in receivers["items"] if it["kind"] == "last"}
+    graded = {e.task_id: e.reward for e in episodes(traces_of(runs, key))[0]}
     out = []
     for ep in links:
         turns_ = resampled["episodes"].get(ep["task_id"], [])
@@ -242,6 +243,7 @@ def anchors(runs: Path, key: str) -> list[dict]:
                 "blocked": [x[:3] for x in b.get("links", [])],
                 "blocked_layers": b.get("layers_blocked"),
                 "outcome_from_turn": means,
+                "outcome": graded.get(ep["task_id"]),
                 "replays": resampled["n"],
                 "sentences": [
                     {"text": s["text"], "message": s["message"], "role": s["role"], "part": s["part"], "score": s["score"]}
