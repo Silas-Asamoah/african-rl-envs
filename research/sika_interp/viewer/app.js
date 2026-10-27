@@ -56,6 +56,9 @@ function pctColour(p, v) {
   const t = Math.max(0, (p - 50) / 50); if (t < 0.05) return "#1b1b1b";
   return mix(towardGood(v) >= 0 ? COL.good : COL.harm, 0.1 + 0.9 * t ** 1.5);
 }
+// A push beats 97% of the random directions only when it beats all of them: percentiles arrive
+// rounded, so 31 of 32 (96.875%) is stored as 97. Matches the unrounded summaries; chance 1 in 33.
+const beats97 = p => p >= 99.5;
 function seqColour(t, hex = COL.act) { return mix(hex, 0.08 + 0.92 * Math.max(0, Math.min(1, t))); }
 
 // ---------- small charts ----------
@@ -244,7 +247,7 @@ function visibleNeurons(m, cols) {
   let rows = [...Array(m.N).keys()].filter(n => S.group === "all" || m.reason[n] === S.group);
   if (S.sort === "layer") rows.sort((a, b) => m.raw.neurons[a][0] - m.raw.neurons[b][0] || m.raw.neurons[a][1] - m.raw.neurons[b][1]);
   else {
-    const score = n => { let t = 0, c = 0; for (const d of cols) { const [v, p] = cell(m, d, n); if (!Number.isNaN(v)) { t += S.sort === "effect" ? Math.abs(v) : (p >= 97 ? 1 : 0); c++; } } return c ? t / c : 0; };
+    const score = n => { let t = 0, c = 0; for (const d of cols) { const [v, p] = cell(m, d, n); if (!Number.isNaN(v)) { t += S.sort === "effect" ? Math.abs(v) : (beats97(p) ? 1 : 0); c++; } } return c ? t / c : 0; };
     const sc = new Map(rows.map(n => [n, score(n)])); rows.sort((a, b) => sc.get(b) - sc.get(a));
   }
   return rows;
@@ -554,7 +557,7 @@ async function renderCircuit() {
     const [x, y] = pos.get(n), col = towardGood(v) >= 0 ? COL.good : COL.harm, [L, i] = m.raw.neurons[n];
     edges += `<path class="edge" data-n="${n}" d="M${x},${y} C${x},${(y + out[1]) / 2} ${out[0]},${(y + out[1]) / 2 + 40} ${out[0]},${out[1] + 12}" fill="none" stroke="${col}" stroke-opacity="0.55" stroke-width="${0.6 + 5 * Math.abs(v) / mx}"/>`;
     const rank = ranked.findIndex(r => r[0] === n);
-    nodes += `<g class="node" data-n="${n}" style="cursor:pointer"><circle cx="${x}" cy="${y}" r="${5 + 9 * Math.sqrt(Math.abs(v) / mx)}" fill="${col}" fill-opacity="${p >= 97 ? 0.95 : 0.45}" stroke="${S.pins.includes(n) ? COL.ink : "none"}" stroke-width="2"/>${rank < 12 ? `<text x="${x}" y="${y - 12 - 6 * Math.sqrt(Math.abs(v) / mx)}" text-anchor="middle">L${L}·${i}</text>` : ""}</g>`;
+    nodes += `<g class="node" data-n="${n}" style="cursor:pointer"><circle cx="${x}" cy="${y}" r="${5 + 9 * Math.sqrt(Math.abs(v) / mx)}" fill="${col}" fill-opacity="${beats97(p) ? 0.95 : 0.45}" stroke="${S.pins.includes(n) ? COL.ink : "none"}" stroke-width="2"/>${rank < 12 ? `<text x="${x}" y="${y - 12 - 6 * Math.sqrt(Math.abs(v) / mx)}" text-anchor="middle">L${L}·${i}</text>` : ""}</g>`;
   }
   const dd = D[d];
   g += wires + edges + nodes + `<g><rect x="${out[0] - 120}" y="${out[1] - 16}" width="240" height="28" fill="${COL.line}" rx="3"/><text x="${out[0]}" y="${out[1] + 2}" text-anchor="middle" class="val">${esc(dd.family)} · ${LANG[dd.language]} · ${S.margin} margin ${fx(dd[S.margin + "_margin"], 1)}</text></g>`;
@@ -680,7 +683,7 @@ function steeringSummary(n) {
   const beats = ORDER.map(l => sum.share_beats_97[l] ? `${LANG[l]} ${pct(sum.share_beats_97[l][n][S.sign > 0 ? 1 : 0][S.dose])}` : "").join(" · ");
   // Task × language grid: mean shift and share beating 97% of random, this push, every decision.
   const famLang = {};
-  SM.raw.decisions.forEach((dd, d) => { const [v, p] = cell(SM, d, n); if (Number.isNaN(v)) return; const c = ((famLang[dd.family] ||= {})[dd.language] ||= { s: 0, b: 0, k: 0 }); c.s += v; c.b += p >= 97; c.k++; });
+  SM.raw.decisions.forEach((dd, d) => { const [v, p] = cell(SM, d, n); if (Number.isNaN(v)) return; const c = ((famLang[dd.family] ||= {})[dd.language] ||= { s: 0, b: 0, k: 0 }); c.s += v; c.b += beats97(p); c.k++; });
   const grid = `<table class="grid"><thead><tr><th>task</th>${["en", "en-tw", "tw"].map(l => `<th style="text-align:center;color:${COL[l]}">${LANG[l]}</th>`).join("")}</tr></thead><tbody>${Object.keys(famLang).sort().map(f => `<tr><td>${esc(f)}</td>${["en", "en-tw", "tw"].map(l => { const c = famLang[f][l]; if (!c) return "<td></td>"; const m = c.s / c.k; return `<td class="cell" style="background:${shiftColour(m)};color:${COL.ink}" title="${esc(f)} · ${LANG[l]}: mean shift ${fx(m)} over ${c.k} decisions; beats 97% of random in ${c.b}">${fx(m, 1)} <span style="color:${COL.ink2}">${c.b}/${c.k}</span></td>`; }).join("")}</tr>`).join("")}</tbody></table>`;
   return `<div class="def">steering · mean ${S.margin} margin shift by dose (nats); solid = push up, dashed = push down; colour = request language</div>${g}
   <div class="def">share of decisions where this push beats 97% of random directions (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}): ${beats}</div>
