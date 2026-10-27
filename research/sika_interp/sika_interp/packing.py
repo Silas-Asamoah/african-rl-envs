@@ -223,3 +223,40 @@ def rows_from_npz(npz_dir: Path, decisions: list[dict], names: set[str] | None =
             row[f"{margin}_route_gap"] = round(float(start - m0), 4)
         out.append(row)
     return out
+
+
+def assemble_from_npz(npz_dir: Path, decisions: list[dict], cards: list[dict], names: set[str], model: str,
+                      run: str, doses: list[float], controls: int) -> dict:
+    """A steering result in `steer_all`'s shape, rebuilt entirely from saved arrays: the
+    directions in `Model.steer_moves`' order (the cards' neurons sorted, then `controls`
+    random directions per layer used) and a row per decision in `names`."""
+    picked = sorted({(c["layer"], c["neuron"]) for c in cards})
+    used = sorted({layer for layer, _ in picked})
+    directions = [["neuron", layer, i] for layer, i in picked] + [["control", layer, c] for layer in used for c in range(controls)]
+    return {"model": model, "run": run, "doses": doses, "signs": [-1, 1], "controls_per_layer": controls,
+            "directions": directions, "decisions": rows_from_npz(npz_dir, decisions, names)}
+
+
+def repair_pieces(pieces: list[str], text: str) -> list[str]:
+    """Token texts with characters split across tokens restored from the original text. A
+    character whose bytes span two tokens decodes as U+FFFD in the first and nothing in the
+    second; each U+FFFD stands for one character of `text` at the same place. The pieces end
+    where `text` ends (they may start a little before it). Pieces are returned unchanged if
+    they don't line up with `text`."""
+    off = sum(len(p) for p in pieces) - len(text)
+    if off < 0:
+        return pieces
+    out, g = [], 0
+    for p in pieces:
+        fixed = []
+        for ch in p:
+            if g >= off:
+                want = text[g - off]
+                if ch == "\ufffd":
+                    ch = want
+                elif ch != want:
+                    return pieces
+            fixed.append(ch)
+            g += 1
+        out.append("".join(fixed))
+    return out

@@ -1064,7 +1064,7 @@ class Pushes:
         import torch
 
         total = torch.cuda.get_device_properties(0).total_memory
-        free = total - torch.cuda.memory_allocated() - 12e9
+        free = total - torch.cuda.memory_allocated() - 20e9
         if way.startswith("siblings"):
             return 384 if total > 60e9 else 128
         per = sum(t.numel() * t.element_size() for _, _, t in _tensors(self.head) if t.dim() > 0 and t.shape[0] == 1)

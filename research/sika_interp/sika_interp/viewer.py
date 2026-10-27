@@ -292,6 +292,18 @@ def card_file(runs: Path, key: str) -> list[dict] | None:
     if not cards:
         return None
     ctx = _read(runs / SOURCES["contexts"].format(key=key)) or {"neurons": {}, "episodes": {}}
+    if ctx["episodes"]:
+        from sika_interp.packing import repair_pieces
+
+        texts = {}
+        for path in traces_of(runs, key):
+            for trace in load(path):
+                ts = turns(trace)
+                if ts:
+                    texts[trace["task"]["data"]["id"]] = ts[0].messages[-1]["content"]
+        for ep in ctx["episodes"].values():
+            if ep["task_id"] in texts:
+                ep["pieces"] = repair_pieces(ep["pieces"], texts[ep["task_id"]])
     for c in cards:
         rows = ctx["neurons"].get(f"{c['layer']}:{c['neuron']}", {})
         c["contexts"] = {

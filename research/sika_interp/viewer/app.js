@@ -491,9 +491,14 @@ function steeringSummary(n) {
   doses.forEach((d, k) => g += `<text x="${x(k)}" y="${H + 12}" text-anchor="middle">${d}</text>`);
   g += `<text x="4" y="${y(mx) + 4}">${fx(mx, 1)}</text><text x="4" y="${y(-mx) + 4}">${fx(-mx, 1)}</text></svg>`;
   const beats = ORDER.map(l => sum.share_beats_97[l] ? `${LANG[l]} ${pct(sum.share_beats_97[l][n][S.sign > 0 ? 1 : 0][S.dose])}` : "").join(" · ");
+  // Task × language grid: mean shift and share beating 97% of random, this push, every decision.
+  const famLang = {};
+  SM.raw.decisions.forEach((dd, d) => { const [v, p] = cell(SM, d, n); if (Number.isNaN(v)) return; const c = ((famLang[dd.family] ||= {})[dd.language] ||= { s: 0, b: 0, k: 0 }); c.s += v; c.b += p >= 97; c.k++; });
+  const grid = `<table class="grid"><thead><tr><th>task</th>${["en", "en-tw", "tw"].map(l => `<th style="text-align:center;color:${COL[l]}">${LANG[l]}</th>`).join("")}</tr></thead><tbody>${Object.keys(famLang).sort().map(f => `<tr><td>${esc(f)}</td>${["en", "en-tw", "tw"].map(l => { const c = famLang[f][l]; if (!c) return "<td></td>"; const m = c.s / c.k; return `<td class="cell" style="background:${shiftColour(m)};color:${COL.ink}" title="${esc(f)} · ${LANG[l]}: mean shift ${fx(m)} over ${c.k} decisions; beats 97% of random in ${c.b}">${fx(m, 1)} <span style="color:${COL.ink2}">${c.b}/${c.k}</span></td>`; }).join("")}</tr>`).join("")}</tbody></table>`;
   return `<div class="def">steering · mean ${S.margin} margin shift by dose (nats); solid = push up, dashed = push down; colour = request language</div>${g}
   <div class="def">share of decisions where this push beats 97% of random directions (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}): ${beats}</div>
-  <div class="def" style="margin-top:6px">every decision in the matrix's filter (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}), coloured by shift; grouped by task</div><canvas data-strip="${n}" height="26" style="width:100%;height:26px"></canvas>`;
+  <div class="def" style="margin-top:6px">per task and language (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}): mean shift in nats · decisions where it beats 97% of random / decisions</div><div class="scroll">${grid}</div>
+  <div class="def" style="margin-top:6px">every decision in the matrix's filter, coloured by shift; grouped by task</div><canvas data-strip="${n}" height="26" style="width:100%;height:26px"></canvas>`;
 }
 function drawStrip(cv) {
   const n = +cv.dataset.strip, cols = visibleDecisions(SM), w = cv.clientWidth || 600, dpr = devicePixelRatio || 1;

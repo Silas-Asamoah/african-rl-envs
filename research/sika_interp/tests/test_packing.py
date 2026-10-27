@@ -54,3 +54,24 @@ def test_rows_rebuilt_from_saved_arrays(tmp_path):
     assert row["right_shift"][0][0][0] == pytest.approx(0, abs=0.01)
     assert row["right_shift"][1][1][0] == pytest.approx(np.log(0.9 / 0.1), abs=0.01)
     assert row["harm_shift"][1][1][0] == pytest.approx(-np.log(0.9 / 0.1), abs=0.01)
+
+
+def test_split_characters_restored_from_the_text():
+    from sika_interp.packing import repair_pieces
+
+    text = "Me pɛ sɛ me-send-i GH₵40"
+    pieces = ["Me", " p", "�", "", " s", "�", "", " me", "-send", "-i", " GH", "�", "", "40"]
+    assert "".join(repair_pieces(pieces, text)) == text
+    assert repair_pieces(pieces, text)[2:4] == ["ɛ", ""]
+
+
+def test_pieces_that_dont_line_up_are_left_alone():
+    from sika_interp.packing import repair_pieces
+
+    assert repair_pieces(["x", "�"], "ab") == ["x", "�"]
+
+
+def test_pieces_may_start_before_the_text():
+    from sika_interp.packing import repair_pieces
+
+    assert repair_pieces(["\n", "Me", " p", "�", ""], "Me pɛ") == ["\n", "Me", " p", "ɛ", ""]
