@@ -98,7 +98,7 @@
         <div class="tabs" role="tablist" aria-label="Inspector" data-group="insp">
           <button role="tab" data-tab="decision" aria-selected="true">decision</button><button role="tab" data-tab="circuit" aria-selected="false">circuit</button><button role="tab" data-tab="neuron" aria-selected="false">neuron</button><button role="tab" data-tab="replays" aria-selected="false">steered replays</button>
         </div>
-        <div class="tab-body" data-group="insp" data-tab="decision"><div class="decision" id="decision"><p class="def">Select a cell in the matrix.</p></div></div>
+        <div class="tab-body" data-group="insp" data-tab="decision"><div class="decision" id="decision"><p class="def">Select a cell in the matrix: a column is one decision, a row one neuron.</p></div></div>
         <div class="tab-body" data-group="insp" data-tab="circuit" hidden>
           <p class="def">Neurons with the largest steering effect at the selected decision, by layer. Edge to the top: measured margin shift (lime toward the right move, coral away). Edges between neurons: direct-path weight (write · read, from the weights; not specific to this input), dashed when negative. Node: solid when its shift beats 97% of random directions at its layer; placed across by its position on the neuron map. Hover to trace, click to open, ⌘/ctrl-click to pin.</p>
           <div class="controls" id="g-controls"></div>

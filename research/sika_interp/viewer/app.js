@@ -287,16 +287,17 @@ async function drawMatrix() {
     g.fillStyle = COL[dd.language]; g.fillRect(x, 12, MX.cw, 8);
     g.fillStyle = dd.reward === 1 ? COL.good : dd.reward === -1 ? COL.harm : "#555"; g.fillRect(x, 22, MX.cw, 6);
   });
+  let scored = 0, beat = 0;
   rows.forEach((n, r) => {
     const y = MX.top + r * MX.rh, L = m.raw.neurons[n][0];
     g.fillStyle = seqColour(L / 34, "#c9c9c9"); g.fillRect(4, y, 10, MX.rh);
     g.fillStyle = REASON_COL[m.reason[n]] || "#444"; g.fillRect(18, y, 10, MX.rh);
-    cols.forEach((d, c) => { const [v, p] = cell(m, d, n); g.fillStyle = S.colour === "pct" ? pctColour(p, v) : shiftColour(v); g.fillRect(MX.left + c * MX.cw, y, MX.cw, MX.rh); });
+    cols.forEach((d, c) => { const [v, p] = cell(m, d, n); if (!Number.isNaN(p)) { scored++; beat += beats97(p); } g.fillStyle = S.colour === "pct" ? pctColour(p, v) : shiftColour(v); g.fillRect(MX.left + c * MX.cw, y, MX.cw, MX.rh); });
   });
   if (S.decision != null) { const c = cols.indexOf(S.decision); if (c >= 0) { g.strokeStyle = COL.ink; g.strokeRect(MX.left + c * MX.cw - 0.5, MX.top - 2, MX.cw + 1, rows.length * MX.rh + 4); } }
   if (S.neuron != null) { const r = rows.indexOf(S.neuron); if (r >= 0) { g.strokeStyle = COL.ink; g.strokeRect(MX.left - 2, MX.top + r * MX.rh - 0.5, cols.length * MX.cw + 4, MX.rh + 1); } }
   cv._layout = { cols, rows };
-  $("s-legend").innerHTML = `<span>${cols.length} decisions × ${rows.length} neurons</span><span><span class="sw" style="background:${COL.good}"></span>toward the right move${S.margin === "harm" ? " (less harm)" : ""}</span><span><span class="sw" style="background:${COL.harm}"></span>toward the wrong move${S.margin === "harm" ? " (more harm)" : ""}</span><span>top bands: task · language · outcome (lime right, coral harmful)</span><span>left bands: layer · picked for</span>`;
+  $("s-legend").innerHTML = `<span>${cols.length} decisions × ${rows.length} neurons</span><span>cells beating 97% of random: ${scored ? (100 * beat / scored).toFixed(1) + "%" : "–"} · chance ≈ 3%</span><span><span class="sw" style="background:${COL.good}"></span>toward the right move${S.margin === "harm" ? " (less harm)" : ""}</span><span><span class="sw" style="background:${COL.harm}"></span>toward the wrong move${S.margin === "harm" ? " (more harm)" : ""}</span><span>top bands: task · language · outcome (lime right, coral harmful)</span><span>left bands: layer · picked for</span>`;
 }
 const REASON_COL = { twi_over_english: COL.tw, mixed_over_english: COL["en-tw"], scam_at_request: COL.harm, scam_at_action: "#ff9a85", switch: COL.act, english_word_in_mix: COL.en, language_specific: "#c9c9c9" };
 (function matrixEvents() {
@@ -686,7 +687,7 @@ function steeringSummary(n) {
   SM.raw.decisions.forEach((dd, d) => { const [v, p] = cell(SM, d, n); if (Number.isNaN(v)) return; const c = ((famLang[dd.family] ||= {})[dd.language] ||= { s: 0, b: 0, k: 0 }); c.s += v; c.b += beats97(p); c.k++; });
   const grid = `<table class="grid"><thead><tr><th>task</th>${["en", "en-tw", "tw"].map(l => `<th style="text-align:center;color:${COL[l]}">${LANG[l]}</th>`).join("")}</tr></thead><tbody>${Object.keys(famLang).sort().map(f => `<tr><td>${esc(f)}</td>${["en", "en-tw", "tw"].map(l => { const c = famLang[f][l]; if (!c) return "<td></td>"; const m = c.s / c.k; return `<td class="cell" style="background:${shiftColour(m)};color:${COL.ink}" title="${esc(f)} · ${LANG[l]}: mean shift ${fx(m)} over ${c.k} decisions; beats 97% of random in ${c.b}">${fx(m, 1)} <span style="color:${COL.ink2}">${c.b}/${c.k}</span></td>`; }).join("")}</tr>`).join("")}</tbody></table>`;
   return `<div class="def">steering · mean ${S.margin} margin shift by dose (nats); solid = push up, dashed = push down; colour = request language</div>${g}
-  <div class="def">share of decisions where this push beats 97% of random directions (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}): ${beats}</div>
+  <div class="def">share of decisions where this push beats 97% of random directions (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}; chance ≈ 3%): ${beats}</div>
   <div class="def" style="margin-top:6px">per task and language (push ${S.sign > 0 ? "up" : "down"}, ${doses[S.dose]}): mean shift in nats · decisions where it beats 97% of random / decisions</div><div class="scroll">${grid}</div>
   <div class="def" style="margin-top:6px">every decision in the matrix's filter, coloured by shift; grouped by task</div><canvas data-strip="${n}" height="26" style="width:100%;height:26px"></canvas>`;
 }
@@ -785,7 +786,7 @@ function render() {
   S.decision = null; S.neuron = null; S.pins = []; SM = null;
   renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M); renderSteered(M); renderSweep(M);
   $("dash").innerHTML = '<p class="def">Select a neuron on the map, in the steering matrix or in the circuit.</p>';
-  $("decision").innerHTML = '<p class="def">Select a cell.</p>';
+  $("decision").innerHTML = '<p class="def">Select a cell in the matrix: a column is one decision, a row one neuron.</p>';
   drawMatrix().then(renderCircuit).catch(e => { $("s-legend").innerHTML = `<span class="def">Steering files not available (${esc(e.message)}).</span>`; });
 }
 document.querySelectorAll(".toggle button").forEach(b => b.addEventListener("click", () => { model = b.dataset.model; store.set("sika-model", model); render(); }));
