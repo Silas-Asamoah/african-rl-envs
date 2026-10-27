@@ -126,31 +126,37 @@ The right move is favoured before any push less often as the request gets more T
 | Ministral 3 8B | 61% | 56% | 56% |
 
 Share of neuron × decision pushes (both signs, dose 0.8) whose shift beats 97% of the random
-directions at the same layer, decision, sign and dose (by chance about 3%):
+directions at the same layer, decision, sign and dose, which with 32 directions means beating
+all of them (by chance 1 in 33, about 3%):
 
 | picked for | Qwen en / en-tw / tw | Ministral en / en-tw / tw |
 |---|---|---|
-| switch tokens | 30 / 28 / 26% | 20 / 20 / 20% |
-| English word inside Twi–English | 19 / 19 / 18% | 18 / 18 / 18% |
-| Twi–English over English | 11 / 11 / 11% | 10 / 10 / 10% |
-| scam, end of request | 9 / 9 / 10% | 10 / 10 / 10% |
-| scam, at the action | 9 / 9 / 8% | 12 / 11 / 12% |
-| Twi over English | 9 / 9 / 10% | 16 / 16 / 16% |
-| language-specific | 7 / 8 / 8% | 11 / 12 / 11% |
-| all 637 | 14 / 13 / 13% | 14 / 14 / 14% |
+| switch tokens | 24 / 22 / 21% | 15 / 15 / 15% |
+| English word inside Twi–English | 15 / 15 / 14% | 14 / 14 / 14% |
+| Twi–English over English | 8 / 8 / 8% | 7 / 7 / 6% |
+| scam, end of request | 7 / 7 / 7% | 7 / 7 / 6% |
+| scam, at the action | 6 / 5 / 5% | 8 / 8 / 8% |
+| Twi over English | 5 / 6 / 6% | 12 / 12 / 12% |
+| language-specific | 5 / 5 / 5% | 8 / 8 / 7% |
+| all 637 | 10 / 10 / 9% | 10 / 10 / 10% |
 
-Neurons picked for code-switching move the decision more often than chance in both models,
-and more often than neurons picked for responding to scams; overall the rates are the same in
-every request language. The whole-layer sweep below shows that within a layer the picked
+Corrected 2026-10-27: an earlier version of this table and of the rates below also counted
+pushes that beat 31 of the 32 directions (the stored percentiles were rounded, so 96.9% read as
+97%), which doubles the chance rate to about 6%.
+
+Neurons picked for switch tokens and for English words inside Twi–English move the decision
+more often than chance in both models, and more often than neurons picked for responding to
+scams; neurons picked for Twi–English over English do not differ from the scam groups. Overall
+the rates are the same in every request language. The whole-layer sweep below shows that within a layer the picked
 neurons are typical, so these group differences mostly reflect which layers the groups sit in
-(pushes at early layers beat random more often than at Qwen's layers 21–29). Pushes at the last two layers beat random most often (24–30%)
-because those neurons write almost directly onto the tool-name tokens; Qwen's layers 21–29 move
-it least (5–6%). A few neurons act mainly on Twi and Twi–English decisions: Qwen layer 19
-neuron 4818 (English word inside Twi–English), pushed up, beats random on 43% of Twi–English
-and 52% of Twi decisions against 7% of English ones (mean shift −0.62, −0.54 and 0.00 nats);
-Qwen layer 0 neuron 6709 (Twi over English), pushed down, 36% / 47% / 7%. Ministral layers 28
-and 29 Twi-over-English neurons pushed up shift Twi–English decisions toward the right move by
-+0.84 to +0.98 nats on average against +0.31 to +0.37 for English. Every neuron × decision ×
+(pushes at early layers beat random more often than at Qwen's layers 21–29). Pushes at the
+last two layers beat random most often (23–27%) because those neurons write almost directly
+onto the tool-name tokens; Qwen's layers 21–29 move it least (3%, the chance rate). One neuron
+acts mainly on Twi and Twi–English decisions: Qwen layer 19 neuron 4818 (English word inside
+Twi–English), pushed up, beats random on 31% of Twi–English and 38% of Twi decisions against
+4% of English ones (mean shift −0.62, −0.54 and 0.00 nats). Ministral layers 28 and 29
+Twi-over-English neurons pushed up shift Twi–English decisions toward the right move by +0.84
+to +0.98 nats on average against +0.31 to +0.37 for English. Every neuron × decision ×
 dose, with the move distributions and the random baseline, is in the viewer.
 
 ### Whole-layer sweep
