@@ -516,7 +516,7 @@ class Model:
             steps.append(group)
             k += 1
         base = [self.turn_logprobs(t["messages"], episode["tools"], t["response"]) for t in turns_]
-        links = []
+        links, skipped = [], 0
         for i, group in enumerate(steps):
             for j, t in enumerate(turns_):
                 if group[0] >= len(t["messages"]):
@@ -524,7 +524,11 @@ class Model:
                 if group[0] == 1:
                     continue  # deleting the request leaves nothing to compare
                 kept = [m for n, m in enumerate(t["messages"]) if n not in group]
-                altered = self.turn_logprobs(kept, episode["tools"], t["response"])
+                try:
+                    altered = self.turn_logprobs(kept, episode["tools"], t["response"])
+                except ValueError:  # e.g. two assistant turns in a row, which Mistral's tokenizer refuses
+                    skipped += 1
+                    continue
                 n = min(len(altered), len(base[j]))
                 kl = (base[j][:n].exp() * (base[j][:n] - altered[:n])).sum(-1).mean()
                 links.append([i, j, round(float(kl), 4)])
@@ -542,7 +546,7 @@ class Model:
                 }
             )
         turn_step = [next(i for i, g in enumerate(steps) if g[0] == len(t["messages"])) for t in turns_]
-        return {"task_id": episode["task_id"], "steps": described, "turn_step": turn_step, "links": links}
+        return {"task_id": episode["task_id"], "steps": described, "turn_step": turn_step, "links": links, "skipped": skipped}
 
 
 PAY = ("initiate_transfer", "confirm_transfer")
