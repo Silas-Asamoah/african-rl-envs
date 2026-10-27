@@ -367,15 +367,16 @@ async function renderSteered(M) {
   const base = T.summary.unsteered;
   const rate = c => (c && c.n ? c.right / c.n : null), harm = c => (c && c.n ? c.harmful / c.n : null);
   const dpp = (a, b) => (a == null || b == null ? "" : `<span style="color:${a - b >= 0 ? COL.good : COL.harm}">${a - b >= 0 ? "+" : "−"}${Math.abs(Math.round(100 * (a - b)))}</span>`);
-  let h = `<table class="grid"><thead><tr><th>push</th><th>picked for</th>${ORDER.map(l => `<th style="color:${COL[l]};text-align:center" colspan="2">${LANG[l]}</th>`).join("")}</tr><tr><th></th><th></th>${ORDER.map(() => "<th>right Δ</th><th>harmful Δ</th>").join("")}</tr></thead><tbody>`;
+  let h = `<table class="grid"><thead><tr><th>push</th><th>picked for</th><th>usable</th>${ORDER.map(l => `<th style="color:${COL[l]};text-align:center" colspan="2">${LANG[l]}</th>`).join("")}</tr><tr><th></th><th></th><th></th>${ORDER.map(() => "<th>right Δ</th><th>harmful Δ</th>").join("")}</tr></thead><tbody>`;
   for (const name of T.settings) {
     const c = T.summary[name], dirName = name.replace(/ [+−][0-9.]+$/, ""), info = T.directions[dirName] || {};
-    h += `<tr data-setting="${esc(name)}" style="cursor:pointer"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? " · " + info.why : ""))}</td>${ORDER.map(l => {
+    const broken = c.usable != null && c.usable < 0.8;
+    h += `<tr data-setting="${esc(name)}" style="cursor:pointer;${broken ? "opacity:0.45" : ""}" title="${broken ? "the push broke the model's output in most replays; outcomes reflect replays ending without acting" : ""}"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? " · " + info.why : ""))}</td><td style="text-align:right;color:${broken ? COL.harm : COL.ink2}">${pct(c.usable)}</td>${ORDER.map(l => {
       const r = rate(c[l]), hm = harm(c[l]);
       return `<td style="text-align:right" title="${c[l] ? `${c[l].right} right, ${c[l].harmful} harmful, ${c[l].broken} broken tool calls, ${c[l].unfinished} not finished, of ${c[l].n}` : ""}">${pct(r)} ${name === "unsteered" ? "" : dpp(r, rate(base[l]))}${c[l] && c[l].broken ? ` <span class="def">⚠${c[l].broken}</span>` : ""}</td><td style="text-align:right">${pct(hm)} ${name === "unsteered" ? "" : `<span style="color:${hm - harm(base[l]) > 0 ? COL.harm : COL.good}">${hm == null ? "" : (hm - harm(base[l]) >= 0 ? "+" : "−") + Math.abs(Math.round(100 * (hm - harm(base[l]))))}</span>`}</td>`;
     }).join("")}</tr>`;
   }
-  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${T.decisions.length / 3} tasks × 3 languages) × 3–4 replays per push · dose ${T.doses.join(", ")} · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls (rejected by the server), counted as not right</p>`;
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${T.decisions.length / 3} tasks × 3 languages) × 3–4 replays per push · dose ${T.doses.join(", ")} · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls (rejected by the server), counted as not right · usable: replays whose first turn is a valid call or a real reply; rows below 80% are faded</p>`;
   table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { ST.setting = tr.dataset.setting; drawCompare(); });
   ST.setting = ST.setting && T.settings.includes(ST.setting) ? ST.setting : T.settings[1];
   ST.decision = ST.decision && T.decisions.includes(ST.decision) ? ST.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];

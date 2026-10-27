@@ -363,8 +363,11 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
         error = r.get("error")
         if error and "Function name was" in error:
             note = "broken tool call (the server rejected the call's format)"
+        first = next((m for m in r.get("transcript", []) if m.get("role") == "assistant"), None)
+        # Usable: the push left the model working, its first turn a valid call or a real reply.
+        usable = error is None and first is not None and bool(first.get("tool_calls") or (first.get("content") or "").strip())
         by[r["setting"]][f"{r['task_id']}@{r['turn']}"].append(
-            {"sample": r["sample"], "outcome": outcome, "error": error, "note": note,
+            {"sample": r["sample"], "outcome": outcome, "error": error, "note": note, "usable": usable,
              "transcript": [trim(m) for m in r.get("transcript", [])]}
         )
     names = [s["name"] for s in __import__("sika_interp.steered", fromlist=["settings"]).settings(plan)]
@@ -380,6 +383,8 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
             # Broken tool calls count as replays that did not end right (the model failed the task).
             cells[lang] = {"n": len(outs) + broken, "right": sum(o == 1 for o in outs), "harmful": sum(o == -1 for o in outs),
                            "broken": broken, "unfinished": sum(1 for x in xs if x["note"] and x["note"].startswith("not finished"))}
+        allx = [x for xs in by.get(name, {}).values() for x in xs]
+        cells["usable"] = round(sum(x["usable"] for x in allx) / max(len(allx), 1), 3)
         summary[name] = cells
     directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
     return {"settings": names, "decisions": decisions, "summary": summary, "directions": directions,
