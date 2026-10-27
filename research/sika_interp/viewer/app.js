@@ -360,7 +360,7 @@ function controlsStrip(det, dd, n) {
 // ---------- steered transcripts ----------
 // Two runs share one block: the first (0.4, 23–25 pushes per model) and the low-dose run
 // (0.1 and 0.2, Qwen layer 19, ~200 decisions). Each keeps its own selection.
-const STB = { hi: { decision: null, setting: null }, lo: { decision: null, setting: null } };
+const STB = { hi: { decision: null, setting: null, against: "unsteered" }, lo: { decision: null, setting: null, against: "unsteered" } };
 function renderSteered(M) {
   const any = Object.values(DATA.models).some(m => m.steered || m.steered_lowdose);
   $("steered").hidden = !any; document.querySelectorAll('nav a[href="#steered"]').forEach(a => a.hidden = !any);
@@ -368,9 +368,16 @@ function renderSteered(M) {
   steeredBlock(M.steered, `steered-${model}.json`, "hi");
 }
 function steeredBlock(T, file, k) {
-  const panel = $(`sb-${k}`), table = $(`sb-${k}-table`), ctl = $(`sb-${k}-controls`), cmp = $(`sb-${k}-compare`);
+  const panel = $(`sb-${k}`), table = $(`sb-${k}-table`), ctl = $(`sb-${k}-controls`), cmp = $(`sb-${k}-compare`), vs = $(`sb-${k}-against`);
   panel.hidden = !T; if (!T) return;
   const st = STB[k], base = T.summary.unsteered;
+  // Δ against the unsteered replays, or against the random pushes at the same layer, dose and sign.
+  const hasRandom = T.settings.some(n => T.summary[n].controls);
+  if (!hasRandom) st.against = "unsteered";
+  const vsRandom = st.against === "random";
+  vs.hidden = !hasRandom;
+  vs.innerHTML = hasRandom ? `<span class="def">Δ against</span><span class="seg">${[["unsteered", "unsteered replays"], ["random", "random pushes, same layer and dose"]].map(([a, t]) => `<button data-a="${a}" aria-pressed="${a === st.against}">${t}</button>`).join("")}</span>` : "";
+  vs.querySelectorAll("button").forEach(b => b.onclick = () => { st.against = b.dataset.a; steeredBlock(T, file, k); });
   const rate = c => (c && c.n ? c.right / c.n : null), harm = c => (c && c.n ? c.harmful / c.n : null);
   const delta = (d, goodUp) => {
     if (!d) return "";
@@ -380,14 +387,15 @@ function steeredBlock(T, file, k) {
   let h = `<table class="grid"><thead><tr><th>push</th><th>picked for</th><th>usable</th>${ORDER.map(l => `<th style="color:${COL[l]};text-align:center" colspan="2">${LANG[l]}</th>`).join("")}</tr><tr><th></th><th></th><th></th>${ORDER.map(() => "<th>right Δ</th><th>harmful Δ</th>").join("")}</tr></thead><tbody>`;
   for (const name of T.settings) {
     const c = T.summary[name], dirName = name.replace(/ [+−][0-9.]+$/, ""), info = T.directions[dirName] || {};
+    const dR = cl => (vsRandom ? cl.r_right : cl.d_right), dH = cl => (vsRandom ? cl.r_harm : cl.d_harm);
     const broken = c.usable != null && c.usable < 0.8;
-    h += `<tr data-setting="${esc(name)}" style="cursor:pointer;${broken ? "opacity:0.45" : ""}" title="${broken ? "the push broke the model's output in most replays; outcomes reflect replays ending without acting" : ""}"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? (info.picked_for ? " · " : "") + info.why : ""))}</td><td style="text-align:right;color:${broken ? COL.harm : COL.ink2}">${pct(c.usable)}</td>${ORDER.map(l => {
+    h += `<tr data-setting="${esc(name)}" style="cursor:pointer;${broken ? "opacity:0.45" : ""}" title="${broken ? "the push broke the model's output in most replays; outcomes reflect replays ending without acting" : ""}"><td title="${vsRandom && c.controls ? esc("against " + c.controls.join(", ")) : ""}">${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? (info.picked_for ? " · " : "") + info.why : ""))}</td><td style="text-align:right;color:${broken ? COL.harm : COL.ink2}">${pct(c.usable)}</td>${ORDER.map(l => {
       const cl = c[l] || {};
-      return `<td style="text-align:right" title="${cl.n ? `${cl.right} right, ${cl.harmful} harmful, ${cl.broken} broken tool calls, ${cl.unfinished} not finished, of ${cl.n}` : ""}">${pct(rate(cl))} ${name === "unsteered" ? "" : delta(cl.d_right, true)}${cl.broken ? ` <span class="def">⚠${cl.broken}</span>` : ""}</td><td style="text-align:right">${pct(harm(cl))} ${name === "unsteered" ? "" : delta(cl.d_harm, false)}</td>`;
+      return `<td style="text-align:right" title="${cl.n ? `${cl.right} right, ${cl.harmful} harmful, ${cl.broken} broken tool calls, ${cl.unfinished} not finished, of ${cl.n}` : ""}">${pct(rate(cl))} ${name === "unsteered" ? "" : delta(dR(cl), true)}${cl.broken ? ` <span class="def">⚠${cl.broken}</span>` : ""}</td><td style="text-align:right">${pct(harm(cl))} ${name === "unsteered" ? "" : delta(dH(cl), false)}</td>`;
     }).join("")}</tr>`;
   }
   const tasks = T.decisions.length / 3;
-  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${tasks} matched triples) × ${T.samples} replays per push · dose ${T.doses.join(", ")} · Δ in percentage points, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls, counted as not right · usable: first turn is a valid call or a real reply; rows below 80% are faded</p>`;
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${tasks} matched triples) × ${T.samples} replays per push · dose ${T.doses.join(", ")} · Δ in percentage points ${vsRandom ? "against the random pushes at the same layer, dose and sign (their replays pooled per decision); pushes with no random direction at their layer have none" : "against the unsteered replays"}, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls, counted as not right · usable: first turn is a valid call or a real reply; rows below 80% are faded</p>`;
   table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { st.setting = tr.dataset.setting; drawCompare(T, file, k); });
   st.setting = st.setting && T.settings.includes(st.setting) ? st.setting : T.settings[1];
   st.decision = st.decision && T.decisions.includes(st.decision) ? st.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];
