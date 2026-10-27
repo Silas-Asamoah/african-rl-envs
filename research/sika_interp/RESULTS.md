@@ -176,10 +176,10 @@ for Qwen and 11 for Ministral, both signs, 3–4 replays per decision, plus the 
 unsteered and two random directions at matched layers per model. Unsteered replays reproduce
 the original episodes' outcomes in 91% (Qwen) and 82% (Ministral) of replays.
 
-Held for a whole episode, many pushes break the model rather than steer it. For Qwen, every
-direction picked at layers 0–6 except one leaves the first turn empty in most replays (usable
-0–42%, where usable means the first turn is a valid call or a real reply); directions at
-layers 19–28 and both random controls leave it working (94–100%). For Ministral, most pushes,
+Held for a whole episode, many pushes break the model rather than steer it. For Qwen, nine of
+the ten pushes at layers 0–6 (all but layer 2 neuron 2005 pushed up) leave the first turn empty
+in most replays (usable 0–42%, where usable means the first turn is a valid call or a real
+reply); pushes at layers 19–28 and both random controls leave it working (94–100%). For Ministral, most pushes,
 random ones included, strip out its reasoning or break its tool-call format (usable 36–98%);
 two (layer 24 neuron 57, layer 20 neuron 0) leave it fluent but make it answer directly with
 no reasoning and no tool call in every replay. Among settings that leave the model working,
