@@ -12,7 +12,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+SENTENCE_END = re.compile(r"(?<=[^\W\d_][.!?])\s+|(?<=[)\"'”’][.!?])\s+|\n+")
+"""A sentence ends after a word's (or a closing quote's) .!? and a space, or at a line break.
+Not after a number's full stop: a numbered rule ("1. Only move money…") stays one sentence."""
 
 
 @dataclass(frozen=True)

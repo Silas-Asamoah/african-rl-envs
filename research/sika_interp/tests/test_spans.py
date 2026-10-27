@@ -43,6 +43,18 @@ def test_sentences_split_at_ends_and_newlines():
     assert [text[s.start : s.end] for s in got] == ["First one.", "Second?", "Third"]
 
 
+def test_numbered_rules_stay_whole():
+    text = "Wallet policy:\n1. Only move money asked for. Never guess.\n2. Ask first.\nGH₵1.50 is fine."
+    got = sentences(text, Span(0, len(text), 0, "content"))
+    assert [text[s.start : s.end] for s in got] == [
+        "Wallet policy:",
+        "1. Only move money asked for.",
+        "Never guess.",
+        "2. Ask first.",
+        "GH₵1.50 is fine.",
+    ]
+
+
 def test_token_ranges_cover_each_span():
     # One token per four characters.
     assert to_tokens([Span(0, 4, 0, "content"), Span(5, 9, 0, "content")], lambda c: c // 4) == [(0, 1), (1, 3)]
