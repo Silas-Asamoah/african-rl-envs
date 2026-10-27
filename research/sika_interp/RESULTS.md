@@ -93,7 +93,8 @@ tool calls and are left out. Our self-hosted Qwen reproduces its published hoste
    73% vs 74%). Ministral rarely names a language.
 
 10. **Anchors: Qwen's failures turn on a step; Ministral's Twi failures start at the request.**
-   Replaying episodes ten times from every turn: in a Twi–English promo-fee task Qwen paid, its
+   Replaying episodes ten times from every turn: in a Twi–English promo-fee task Qwen paid (seed
+   1000006, whose wording turns out to have no Twi words: see the caveat below), its
    first turn decides it (mean outcome +0.6 replaying from turn 0, −0.8 from turn 1); in a Twi
    fake-refund task, turn 2 does (+1.0 from turn 2, −0.8 from turn 3). Ministral's Twi and
    Twi–English fake-refund episodes are harmful from every turn: its reasoning reads the scam as
@@ -151,7 +152,11 @@ percentiles in steps of about 3.
 - Masking replaces words with "…", never writes new Twi; the probe is English-trained, so it is
   tuned to English features by construction.
 - Word tags come from heuristics (`words.py`) checked against the single-language wording
-  pools; a native speaker should spot-check them.
+  pools; a Twi reader checked a sample.
+- 10 of the 600 Twi–English requests have no Twi or mixed word: one promo-fee wording ("I've
+  won Sika Wallet promo. Send … processing fee …", 8 requests) and one errands wording (2) in
+  sika-agent 0.3.1's Twi–English eval pool are entirely English. They are kept as the
+  environment produced them; a later release should replace those wordings.
 - Neuron-explorer's and Thought Anchors' methods were rebuilt for agents; no code was copied.
   Attention blocking covers every head of the full-attention layers: all 34 for Ministral,
   8 of 32 for Qwen (its linear-attention layers still carry the blocked step). Receiver-head
