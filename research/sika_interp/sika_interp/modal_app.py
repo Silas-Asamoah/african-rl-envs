@@ -1822,14 +1822,17 @@ def steer_all(
     diagnose: bool = False,
     gpu: str = "L40S",
     retry: str = "",
+    skip: str = "",
 ):
     """`steer_moves` for every candidate neuron on `model`'s map (map run `run`), at the
     decisions of every task family in the episodes with these seeds (all three languages):
     every first move, plus the later decisions that have right and wrong moves. `limit`
     keeps that many decisions, spread over families and languages, for timing a slice;
     `diagnose` only checks the batching ways against plain passes; `retry` (a previous output
-    JSON) reruns only its decisions that errored and merges them back into it. Saves a JSON of
-    every decision's margins and shifts locally."""
+    JSON) reruns only its decisions that errored and merges them back into it; `skip` (a text
+    file of saved array names) leaves out decisions already done, to be rebuilt from their
+    arrays with `packing.rows_from_npz`. Saves a JSON of every decision's margins and shifts
+    locally."""
     import time
 
     from sika_interp.decisions import collect
@@ -1844,6 +1847,10 @@ def steer_all(
         failed = {(r["task_id"], r["kind"]) for r in previous["decisions"] if "error" in r}
         chosen = [d for d in chosen if (d["task_id"], d["kind"]) in failed]
         print(f"retrying {len(chosen)} decisions that errored")
+    if skip:
+        done = set(Path(skip).read_text().split())
+        chosen = [d for d in chosen if f"{d['task_id'].replace('/', '_')}_{d['kind']}.npz" not in done]
+        print(f"{len(done)} decisions already saved; running {len(chosen)}")
     if limit:
         step = max(1, len(chosen) // limit)
         chosen = chosen[::step][:limit]

@@ -190,3 +190,36 @@ def pack_steering(full: Path, npz_dir: Path | None, paths: list[str], out_dir: P
                 beats[lang] = np.round(np.nanmean(pct[m] >= 97, 0), 3).tolist() if m.any() else None
         summary[name] = {"mean_shift": means, "mean_pct": pcts, "share_beats_97": beats}
     return summary
+
+
+def rows_from_npz(npz_dir: Path, decisions: list[dict], names: set[str] | None = None) -> list[dict]:
+    """Steering rows rebuilt from the arrays `Model.steer_moves` saves, for decisions whose
+    returned rows were lost: margins and shifts from the arrays and each decision's rule, as
+    `Pushes.summary` computes them (the saved pushes are float16, so shifts can differ from
+    a returned row's by ~0.01 nats). `decisions` as `decisions.collect` gives them."""
+    from sika_interp.decisions import margin_sides
+
+    out = []
+    for d in decisions:
+        name = f"{d['task_id'].replace('/', '_')}_{d['kind']}.npz"
+        path = npz_dir / name
+        if (names is not None and name not in names) or not path.exists():
+            continue
+        z = np.load(path)
+        labels = [str(x) for x in z["labels"]]
+        groups = {lab: lab.split("/") for lab in labels[1:]}
+        base = z["base"].astype(np.float64)
+        zero = (z["zero"] if "zero" in z.files else z["base"]).astype(np.float64)
+        eff = z["effects"].astype(np.float64)
+        row = {k: d[k] for k in ("task_id", "family", "category", "language", "seed", "kind", "index", "reward", "took", "rule")}
+        row |= {"labels": labels, "groups": groups, "base": [round(float(x), 4) for x in base], "saved": name,
+                "rebuilt": True, "flagged": False}
+        for margin, (a, b) in margin_sides(labels, groups, d["rule"]).items():
+            m0 = np.logaddexp.reduce(base[a]) - np.logaddexp.reduce(base[b])
+            start = np.logaddexp.reduce(zero[a]) - np.logaddexp.reduce(zero[b])
+            pushed = np.logaddexp.reduce(eff[..., a], -1) - np.logaddexp.reduce(eff[..., b], -1)
+            row[f"{margin}_margin"] = round(float(m0), 4)
+            row[f"{margin}_shift"] = np.round(pushed - start, 3).tolist()
+            row[f"{margin}_route_gap"] = round(float(start - m0), 4)
+        out.append(row)
+    return out
