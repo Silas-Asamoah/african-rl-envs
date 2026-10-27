@@ -88,6 +88,23 @@ function lines(el, series, o = {}) {
   });
   rect.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
 }
+// One row per probe and language: hollow = first read point, filled = second, grey tick = chance.
+function dumbbell(el, rows) {
+  const W = 560, rh = 26, m = { l: 192, r: 92, t: 20 }, H = m.t + rows.length * rh + 4;
+  const x = v => m.l + (W - m.l - m.r) * v;
+  let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  for (const v of [0, 0.5, 1]) g += `<line x1="${x(v)}" x2="${x(v)}" y1="${m.t - 4}" y2="${H}" stroke="${COL.grid}"/><text x="${x(v)}" y="11" text-anchor="${v === 0 ? "start" : v === 1 ? "end" : "middle"}">${Math.round(100 * v)}%</text>`;
+  rows.forEach((r, k) => {
+    const y = m.t + k * rh + rh / 2;
+    g += `<text x="${m.l - 10}" y="${y + 4}" text-anchor="end" class="val">${esc(r.label)}</text>`;
+    if (r.chance != null) g += `<line x1="${x(r.chance)}" x2="${x(r.chance)}" y1="${y - 8}" y2="${y + 8}" stroke="${COL.muted}" stroke-width="1.5" stroke-dasharray="2 2"><title>chance ${pct(r.chance)}</title></line>`;
+    g += `<line x1="${x(r.a)}" x2="${x(r.b)}" y1="${y}" y2="${y}" stroke="${r.color}" stroke-width="2" opacity="0.6"/>`;
+    g += `<circle cx="${x(r.a)}" cy="${y}" r="5" fill="#121212" stroke="${r.color}" stroke-width="2"><title>${esc(r.label)} · ${esc(r.aName)}: ${pct(r.a)}</title></circle>`;
+    g += `<circle cx="${x(r.b)}" cy="${y}" r="5" fill="${r.color}" stroke="#121212" stroke-width="1.5"><title>${esc(r.label)} · ${esc(r.bName)}: ${pct(r.b)}</title></circle>`;
+    g += `<text x="${W - m.r + 10}" y="${y + 4}" class="val">${pct(r.a)} → ${pct(r.b)}</text>`;
+  });
+  el.innerHTML = g + "</svg>";
+}
 function stacked(el, rows) {
   const W = 540, rh = 26, m = { l: 170, r: 64 }, H = rows.length * rh + 6;
   let g = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
@@ -148,11 +165,12 @@ function renderReadouts(M) {
         { name: "→ Twi", color: COL.tw, values: P.request_end[q].from_en.tw },
         { name: "words → Twi–English", color: COL["en-tw"], flat: WA[q]["from_en_en-tw"], dash: true },
         { name: "words → Twi", color: COL.tw, flat: WA[q].from_en_tw, dash: true },
+        { name: q === "threat" ? "chance (share of scam requests)" : "chance", color: COL.muted, flat: P.request_end[q].chance, dash: true },
       ];
       legend($(lg), s); lines($(el), s, { y });
     }
     const best = a => Math.max(...a.filter(v => v === v));
-    stacked($("c-after"), [["family", "task type"], ["threat", "scam or not"]].flatMap(([q, name]) => ORDER.map(l => ({ label: `${name} · ${LANG[l]}`, value: pct(best(P.reasoning_end[q].within[l])), segs: [{ name: LANG[l], v: best(P.reasoning_end[q].within[l]), color: COL[l] }] }))));
+    dumbbell($("c-after"), [["family", "task type"], ["threat", "scam or not"]].flatMap(([q, name]) => ORDER.map(l => ({ label: `${name} · ${LANG[l]}`, color: COL[l], chance: P.reasoning_end[q].chance, a: best(P.request_end[q].within[l]), aName: "end of request", b: best(P.reasoning_end[q].within[l]), bName: "end of reasoning" }))));
     const sp = [["request_end", "end of request", COL.ink], ["reasoning_end", "end of reasoning", COL.act], ["action_start", "first action token", COL.muted]].map(([k, name, color]) => ({ name, color, values: P[k].placement.closer_to_en }));
     sp.push({ name: "half", color: COL.muted, flat: 0.5, dash: true });
     legend($("l-place"), sp); lines($("c-place"), sp, { y: [0, 1] });
