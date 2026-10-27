@@ -379,19 +379,21 @@ function steeredBlock(T, file, k) {
   vs.innerHTML = hasRandom ? `<span class="def">Δ against</span><span class="seg">${[["unsteered", "unsteered replays"], ["random", "random pushes, same layer and dose"]].map(([a, t]) => `<button data-a="${a}" aria-pressed="${a === st.against}">${t}</button>`).join("")}</span>` : "";
   vs.querySelectorAll("button").forEach(b => b.onclick = () => { st.against = b.dataset.a; steeredBlock(T, file, k); });
   const rate = c => (c && c.n ? c.right / c.n : null), harm = c => (c && c.n ? c.harmful / c.n : null);
-  const delta = (d, goodUp) => {
+  const delta = (d, goodUp, gap) => {
     if (!d) return "";
     const [m, lo, hi, n] = d, sig = lo > 0 || hi < 0, good = goodUp ? m >= 0 : m <= 0;
-    return `<span style="color:${good ? COL.good : COL.harm};${sig ? "font-weight:700" : "opacity:0.8"}" title="${(100 * m).toFixed(1)} points, 95% interval ${(100 * lo).toFixed(1)} to ${(100 * hi).toFixed(1)} over ${n} decisions">${m >= 0 ? "+" : "−"}${Math.abs(Math.round(100 * m))}${sig ? "★" : ""}</span>`;
+    const g = gap ? `; minus the English change in the same triple: ${(100 * gap[0]).toFixed(1)} points, 95% interval ${(100 * gap[1]).toFixed(1)} to ${(100 * gap[2]).toFixed(1)} over ${gap[3]} triples` : "";
+    return `<span style="color:${good ? COL.good : COL.harm};${sig ? "font-weight:700" : "opacity:0.8"}" title="${(100 * m).toFixed(1)} points, 95% interval ${(100 * lo).toFixed(1)} to ${(100 * hi).toFixed(1)} over ${n} decisions${g}">${Math.round(100 * m) > 0 ? "+" : Math.round(100 * m) < 0 ? "−" : ""}${Math.abs(Math.round(100 * m))}${sig ? "★" : ""}</span>`;
   };
   let h = `<table class="grid"><thead><tr><th>push</th><th>picked for</th><th>usable</th>${ORDER.map(l => `<th style="color:${COL[l]};text-align:center" colspan="2">${LANG[l]}</th>`).join("")}</tr><tr><th></th><th></th><th></th>${ORDER.map(() => "<th>right Δ</th><th>harmful Δ</th>").join("")}</tr></thead><tbody>`;
   for (const name of T.settings) {
     const c = T.summary[name], dirName = name.replace(/ [+−][0-9.]+$/, ""), info = T.directions[dirName] || {};
     const dR = cl => (vsRandom ? cl.r_right : cl.d_right), dH = cl => (vsRandom ? cl.r_harm : cl.d_harm);
+    const gap = (l, what) => ((c.minus_en || {})[l] || {})[(vsRandom ? "r_" : "d_") + what];
     const broken = c.usable != null && c.usable < 0.8;
     h += `<tr data-setting="${esc(name)}" style="cursor:pointer;${broken ? "opacity:0.45" : ""}" title="${broken ? "the push broke the model's output in most replays; outcomes reflect replays ending without acting" : ""}"><td title="${vsRandom && c.controls ? esc("against " + c.controls.join(", ")) : ""}">${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? (info.picked_for ? " · " : "") + info.why : ""))}</td><td style="text-align:right;color:${broken ? COL.harm : COL.ink2}">${pct(c.usable)}</td>${ORDER.map(l => {
       const cl = c[l] || {};
-      return `<td style="text-align:right" title="${cl.n ? `${cl.right} right, ${cl.harmful} harmful, ${cl.broken} broken tool calls, ${cl.unfinished} not finished, of ${cl.n}` : ""}">${pct(rate(cl))} ${name === "unsteered" ? "" : delta(dR(cl), true)}${cl.broken ? ` <span class="def">⚠${cl.broken}</span>` : ""}</td><td style="text-align:right">${pct(harm(cl))} ${name === "unsteered" ? "" : delta(dH(cl), false)}</td>`;
+      return `<td style="text-align:right" title="${cl.n ? `${cl.right} right, ${cl.harmful} harmful, ${cl.broken} broken tool calls, ${cl.unfinished} not finished, of ${cl.n}` : ""}">${pct(rate(cl))} ${name === "unsteered" ? "" : delta(dR(cl), true, gap(l, "right"))}${cl.broken ? ` <span class="def">⚠${cl.broken}</span>` : ""}</td><td style="text-align:right">${pct(harm(cl))} ${name === "unsteered" ? "" : delta(dH(cl), false, gap(l, "harm"))}</td>`;
     }).join("")}</tr>`;
   }
   const tasks = T.decisions.length / 3;
