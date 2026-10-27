@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 from functools import cache
 
 from sika_agent import templates
-from sika_agent.scenarios import DAY_NAMES, FEMALE, MALE, SURNAMES
+from sika_agent.scenarios import DAY_NAMES, FEMALE, MALE, PRODUCTS, SURNAMES
 from sika_agent.wallet import LENDER
 
 TAGS = ("en", "tw", "mixed", "other", "unknown")
@@ -51,6 +51,9 @@ HOMOGRAPHS = frozenset({"me", "a", "so", "no", "o"})
 on/also, "no" the Twi determiner, "o" a particle both use."""
 TWI_WORDS = frozenset({"sika"})
 """Twi however often the English pool uses them (English wordings say "my sika" too)."""
+PRODUCT_WORDS = frozenset(w for _, short, *_ in PRODUCTS for w in short.split())
+"""English words the scenario fills into "{product}" in every language ("solar kit"). Like
+other borrowings, they don't vouch for a homograph's side ("me solar kit" is Twi)."""
 EDGE = "\"'“”‘’.,!?;:()…"
 """Punctuation stripped from the ends of a word."""
 SENTENCE_END = (".", "!", "?")
@@ -167,6 +170,8 @@ def _is_mixed(pieces: list[str]) -> bool:
 def _side(word: str) -> str | None:
     """English if the English evidence uses the word (or its stem: "fees", "contacts"),
     Twi if only the Twi pool does."""
+    if word in PRODUCT_WORDS:
+        return "en"
     if _english(word) or any(word.endswith(x) and _english(word[: -len(x)]) for x in ENGLISH_SUFFIXES):
         return "en"
     if _counts("tw")[word]:

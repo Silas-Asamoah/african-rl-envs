@@ -60,6 +60,16 @@ def test_english_the_environment_uses_is_english(word):
     assert tags(f"Let me check the {word} first.")[word] == "en"
 
 
+def test_product_names_filled_into_wordings_are_english():
+    """Wordings say "{product}"; the scenario fills in "solar kit" or "phone" in every language."""
+    got = tags("Check-i ma me ɛ, how much do I still owe wɔ me solar kit a metɔɔ no so?")
+    assert got["solar"] == got["kit"] == "en"
+
+
+def test_product_names_dont_decide_their_neighbours():
+    assert tags("Chale, me solar kit ayɛ locked.")["me"] == "tw"
+
+
 def test_sika_is_money_unless_it_is_the_brand():
     assert tags("fa sika no")["sika"] == "tw"
     assert tags("Sika Wallet")["Sika"] == "other"
