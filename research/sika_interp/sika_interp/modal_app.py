@@ -539,34 +539,51 @@ class Model:
 
         def ok(check: dict) -> bool:
             # Every way, one-token-at-a-time included, lands up to ~0.16 nats from the plain
-            # passes on minority moves (bf16 rounding); shifts are taken from a zero push done
-            # the same way, so a way is kept if it stays within that floor.
+            # passes on minority moves (bf16 rounding; more on long prompts); shifts are taken
+            # from a zero push done the same way, so a way is kept if it stays within that floor.
             return "likely" in check and check["likely"] < 0.25
+
+        def gap(check: dict) -> float:
+            return check.get("likely", float("inf"))
 
         way, out = None, []
         for d in decisions:
             started = time.time()
-            at = Pushes(self, d, used, [m[1] for m in meta], directions, doses)
             row = {k: d[k] for k in ("task_id", "family", "category", "language", "seed", "kind", "index", "reward", "took", "rule")}
-            with at.hooked(), torch.no_grad():
-                if diagnose:
-                    row["checks"] = {w: at.check(w) for w in order}
-                    out.append(row | at.summary(None) | {"seconds": round(time.time() - started, 1)})
-                    continue
-                checks = {}
-                for candidate in [way] if way else order:
-                    checks[candidate] = at.check(candidate)
-                    if ok(checks[candidate]):
-                        way = candidate
-                        break
-                if not ok(checks.get(way, {})):
-                    raise RuntimeError(f"no batched way matches the plain passes at {d['task_id']}: {checks}")
-                effects, zero = at.run(way, rows)
-                effects, zero = effects.view(len(meta), 2, len(doses), -1).numpy(), zero.numpy()
-            row |= at.summary(effects, zero)
-            name = f"{d['task_id'].replace('/', '_')}_{d['kind']}.npz"
-            np.savez_compressed(folder / name, base=at.base, zero=zero, effects=effects.astype(np.float16), labels=np.array(at.labels))
-            row |= {"saved": name, "seconds": round(time.time() - started, 1), "way": way, "checks": checks, "batch": at.batch(way)}
+            try:
+                at = Pushes(self, d, used, [m[1] for m in meta], directions, doses)
+                with at.hooked(), torch.no_grad():
+                    if diagnose:
+                        row["checks"] = {w: at.check(w) for w in order}
+                        out.append(row | at.summary(None) | {"seconds": round(time.time() - started, 1)})
+                        continue
+                    checks = {}
+                    if way is None:
+                        for candidate in order:
+                            checks[candidate] = at.check(candidate)
+                            if ok(checks[candidate]):
+                                way = candidate
+                                break
+                        if way is None:  # the fastest way that runs; judged against stepwise below
+                            way = next(w for w in order if "likely" in checks[w])
+                    else:
+                        checks[way] = at.check(way)
+                    flagged = False
+                    if not ok(checks[way]) and way != "tiled-stepwise":
+                        # Beyond the usual floor: is this prompt just noisier? Compare with the
+                        # one-token-at-a-time route, the one the model generates with.
+                        checks.setdefault("tiled-stepwise", at.check("tiled-stepwise"))
+                        flagged = gap(checks[way]) > 2 * gap(checks["tiled-stepwise"]) + 0.1
+                    effects, zero = at.run(way, rows)
+                    effects, zero = effects.view(len(meta), 2, len(doses), -1).numpy(), zero.numpy()
+                row |= at.summary(effects, zero)
+                name = f"{d['task_id'].replace('/', '_')}_{d['kind']}.npz"
+                np.savez_compressed(folder / name, base=at.base, zero=zero, effects=effects.astype(np.float16), labels=np.array(at.labels))
+                row |= {"saved": name, "way": way, "checks": checks, "flagged": flagged, "batch": at.batch(way)}
+            except Exception as e:  # noqa: BLE001 - keep the rest of the batch; the row says what failed
+                row["error"] = f"{type(e).__name__}: {e}"[:500]
+                torch.cuda.empty_cache()
+            row["seconds"] = round(time.time() - started, 1)
             out.append(row)
         cache.commit()
         return [dict(r, directions=meta) if i == 0 else r for i, r in enumerate(out)]
@@ -1771,7 +1788,11 @@ def steer_all(
     path = Path(out or f"steer-all-{run}-{model.split('/')[-1]}.json")
     path.write_text(json.dumps(result))
     seconds = [r["seconds"] for r in rows]
-    print(f"{model}: {len(rows)} decisions in {len(calls)} containers, {time.time() - started:.0f}s wall")
+    print(f"{model}: {len(rows)} decisions in {len(calls)} containers, {time.time() - started:.0f}s wall;"
+          f" errors {sum('error' in r for r in rows)}, flagged {sum(bool(r.get('flagged')) for r in rows)}")
+    for r in rows:
+        if "error" in r:
+            print(f"  ERROR {r['task_id']} {r['kind']}: {r['error'][:200]}")
     if diagnose:
         for r in rows:
             print(f"  {r['task_id']} {r['kind']}: labels {len(r['labels'])} nodes {r['nodes']}")
@@ -1779,9 +1800,10 @@ def steer_all(
                 print(f"    {w:24} {c}")
         print(f"saved {path}")
         return
-    print(f"  way {rows[0]['way']}  checks {rows[0]['checks']}  batch {rows[0]['batch']}")
+    ok_rows = [r for r in rows if "error" not in r]
+    print(f"  way {ok_rows[0]['way']}  checks {ok_rows[0]['checks']}  batch {ok_rows[0]['batch']}")
     print(f"  per decision: mean {sum(seconds) / len(seconds):.1f}s, max {max(seconds):.1f}s; GPU-seconds {sum(seconds):.0f}")
-    for r in rows[:6]:
+    for r in ok_rows[:6]:
         print(f"  {r['task_id']} {r['kind']}: right {r.get('right_margin')} harm {r.get('harm_margin')}  prompt {r['prompt_tokens']} tail {r['tail_tokens']} labels {len(r['labels'])} nodes {r['nodes']}")
     print(f"saved {path}")
 
