@@ -139,9 +139,11 @@ directions at the same layer, decision, sign and dose (by chance about 3%):
 | language-specific | 7 / 8 / 8% | 11 / 12 / 11% |
 | all 637 | 14 / 13 / 13% | 14 / 14 / 14% |
 
-Neurons that respond to code-switching move the decision more often than chance in both
-models, and more often than neurons picked for responding to scams; overall the rates are the
-same in every request language. Pushes at the last two layers beat random most often (24–30%)
+Neurons picked for code-switching move the decision more often than chance in both models,
+and more often than neurons picked for responding to scams; overall the rates are the same in
+every request language. The whole-layer sweep below shows that within a layer the picked
+neurons are typical, so these group differences mostly reflect which layers the groups sit in
+(pushes at early layers beat random more often than at Qwen's layers 21–29). Pushes at the last two layers beat random most often (24–30%)
 because those neurons write almost directly onto the tool-name tokens; Qwen's layers 21–29 move
 it least (5–6%). A few neurons act mainly on Twi and Twi–English decisions: Qwen layer 19
 neuron 4818 (English word inside Twi–English), pushed up, beats random on 43% of Twi–English
@@ -151,8 +153,47 @@ and 29 Twi-over-English neurons pushed up shift Twi–English decisions toward t
 +0.84 to +0.98 nats on average against +0.31 to +0.37 for English. Every neuron × decision ×
 dose, with the move distributions and the random baseline, is in the viewer.
 
+### Whole-layer sweep
+
+Every MLP neuron of one layer (Qwen layer 19, 12,288 neurons; Ministral layer 18, 14,336)
+pushed at the first move of 10 tasks × 4 seeds × 3 languages (120 decisions; dose 0.4, both
+signs), each shift compared with the 32 random directions the steering run measured at that
+layer and decision. Per neuron, the share of decisions where its better sign beats 97% of
+them has a median of 2% (Qwen) and 5% (Ministral), the same for the neurons on the map (2%,
+2–5%) as for the rest; 720–840 Qwen neurons and 1,290–1,560 Ministral neurons beat random on
+more than 20% of decisions, almost none of them picked by the scores. The exception is the
+lever named above: of all 12,288 neurons in Qwen layer 19, neuron 4818 has the largest gap
+between Twi-side and English decisions (beats random on 48% of Twi–English and 52% of Twi
+decisions, 2% of English).
+
+### Steered replays
+
+Thirty decisions per model (10 tasks × 3 languages, first move) replayed with one direction
+added after its layer at every token for the rest of the episode (0.4 × the residual norm),
+against the same simulator and scripted user, graded like the original episodes; vLLM on a
+Prime H200 with the push applied through a worker extension (`steer_serve.py`). 12 directions
+for Qwen and 11 for Ministral, both signs, 3–4 replays per decision, plus the same replays
+unsteered and two random directions at matched layers per model. Unsteered replays reproduce
+the original episodes' outcomes in 91% (Qwen) and 82% (Ministral) of replays.
+
+Held for a whole episode, many pushes break the model rather than steer it. For Qwen, every
+direction picked at layers 0–6 except one leaves the first turn empty in most replays (usable
+0–42%, where usable means the first turn is a valid call or a real reply); directions at
+layers 19–28 and both random controls leave it working (94–100%). For Ministral, most pushes,
+random ones included, strip out its reasoning or break its tool-call format (usable 36–98%);
+two (layer 24 neuron 57, layer 20 neuron 0) leave it fluent but make it answer directly with
+no reasoning and no tool call in every replay. Among settings that leave the model working,
+outcome changes are small at this sample (30 decisions per push, 3–4 replays each) and not
+separable from the random controls: pushing Qwen's layer-19 neuron 4818 up moves Twi decisions
+from 68% to 55% right and from 13% to 25% harmful, the direction the steer lens predicts, but
+its 95% interval over decisions includes zero, and a random direction at the same layer moves
+Twi harm by a similar amount the other way. The transcripts for every replay are in the viewer.
+
 ## Methods and caveats
 
+- Steered replays stop after 12 model turns from the decision; a replay that needed more counts
+  as not finished. Replays whose tool call the server rejected (malformed under the push)
+  count as not right.
 - Steering decisions cover 10 of the 30 matched seeds. Six Ministral decisions are flagged:
   there the batched route sat 0.26–0.48 nats from the plain pass on moves with at least 0.7%
   probability, against 0.01–0.09 one token at a time. They are kept and marked in the viewer. Qwen's first 521 decisions were rebuilt from the
