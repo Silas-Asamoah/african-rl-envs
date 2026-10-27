@@ -190,7 +190,27 @@ paired 95% interval for that harm change (+2.5 to +30 points over 10 decisions) 
 but a random direction at the same layer moves Twi harm by a similar amount the other way
 (−12.5 points, −30 to 0), and across the Qwen settings that leave the model working, 4 of 66
 intervals for picked neurons and 1 of 24 for random ones exclude zero, about what chance gives
-at 95%. The transcripts for every replay are in the viewer.
+at 95%.
+
+A second Qwen run lowered the dose and widened the sample. Layer-19 neurons 4818 and 325 (the
+two with the largest Twi-over-English gap in the layer sweep) and two random directions at
+layer 19 were pushed up at 0.1 and 0.2 × the residual norm from the first move of 201
+decisions (67 matched triples over 7 tasks and 10 seeds; triples whose Twi–English wording has
+no Twi left out), 2 replays per decision, with the same replays unsteered: 3,618 replays. Every
+push left the model working (usable 100%) and no replay reached the turn cap. Unsteered, 80%
+of English, 82% of Twi–English and 71% of Twi replays end right, and 84% reproduce the original
+episode's outcome. Neither neuron changes how episodes end beyond the random directions. Neuron
+4818 changes Twi–English right by +0.8 points (−3.7 to +5.2) at 0.1 and +3.0 (−3.0 to +9.7)
+at 0.2, and Twi harm by −0.8 (−5.2 to +3.7) and +2.2 (−3.7 to +7.5), against unsteered; against
+the two random directions pooled, Twi harm at 0.2 changes by +0.0 (−4.1 to +3.7). The rise in
+Twi harm seen at 0.4 (+12.5 points over 10 decisions) does not appear at 0.1 or 0.2 over 67. Of
+the 48 per-language intervals for the two neurons (right and harmful, two doses, against
+unsteered and against random), 2 exclude zero, both against random and of 3–5 points. Paired
+within triples, the change on the Twi–English or Twi request minus the change on its English
+twin includes zero in all 16 comparisons against unsteered and in 14 of 16 against random. At
+doses that leave Qwen working, a single layer-19 neuron pushed for a whole episode does not
+change outcomes beyond a random push, in Twi–English, Twi or English. The transcripts for
+every replay are in the viewer.
 
 ## Methods and caveats
 
