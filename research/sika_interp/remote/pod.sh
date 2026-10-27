@@ -8,6 +8,8 @@
 #   bash research/sika_interp/remote/pod.sh eval qwen [vf-eval options, e.g. -n 60]
 #   bash research/sika_interp/remote/pod.sh study qwen      # the study's 800 episodes
 #   bash research/sika_interp/remote/pod.sh resume <run>    # re-run its missing rollouts
+#   bash research/sika_interp/remote/pod.sh serve-steer qwen  # steerable server (steer_serve)
+#   bash research/sika_interp/remote/pod.sh steered qwen      # steered transcripts (traces/plan-qwen.json)
 #
 # Traces land in outputs/, server logs in logs/.
 set -euo pipefail
@@ -61,6 +63,44 @@ serve)
   *) echo "serve qwen|ministral" >&2; exit 2 ;;
   esac
   log "$2 starting"
+  ;;
+serve-steer)
+  # As `serve`, with the steering extension (sika_interp.steer_serve) reachable through vLLM's
+  # development endpoint /collective_rpc. Eager and uncompiled, so the hook runs on every
+  # forward pass; no prefix caching, so no request reuses keys computed under another push.
+  steer=(--worker-extension-cls sika_interp.steer_serve.SteerExtension --enforce-eager --optimization-level 0 --no-enable-prefix-caching)
+  export VLLM_SERVER_DEV_MODE=1 PYTHONPATH="$HERE"
+  case "${2:-}" in
+  qwen)
+    setsid nohup vllm serve Qwen/Qwen3.5-9B --port 8000 --max-model-len 32768 \
+      --gpu-memory-utilization "$GPU_SHARE" --language-model-only --gdn-prefill-backend triton \
+      --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder "${steer[@]}" \
+      > "$LOGS/qwen.log" 2>&1 < /dev/null &
+    ;;
+  ministral)
+    setsid nohup vllm serve "$MINISTRAL" --port 8001 --max-model-len 32768 \
+      --gpu-memory-utilization "$GPU_SHARE" --tokenizer_mode mistral --config_format mistral --load_format mistral \
+      --reasoning-parser mistral --enable-auto-tool-choice --tool-call-parser mistral "${steer[@]}" \
+      > "$LOGS/ministral.log" 2>&1 < /dev/null &
+    prompt=$("$VENVS/vllm/bin/python" -c "from huggingface_hub import hf_hub_download as d; print(d('$MINISTRAL', 'SYSTEM_PROMPT.txt'))")
+    (cd "$HERE" && setsid nohup "$VENVS/vllm/bin/python" -m sika_interp.serving \
+      --upstream http://localhost:8001 --port 8002 --reasoning-prompt "$prompt" \
+      > "$LOGS/ministral-proxy.log" 2>&1 < /dev/null &)
+    ;;
+  *) echo "serve-steer qwen|ministral" >&2; exit 2 ;;
+  esac
+  log "$2 starting (steerable)"
+  ;;
+steered)
+  # Steered transcripts (sika_interp.steered) for one model, in the background.
+  name=${2:?steered qwen|ministral}
+  case "$name" in qwen) model=Qwen/Qwen3.5-9B; base=8000; rpc=8000 ;; ministral) model=$MINISTRAL; base=8002; rpc=8001 ;; esac
+  traces=$(ls "$ROOT"/traces/study-*-"$name"/traces.jsonl)
+  (cd "$HERE" && setsid nohup "$VENVS/client/bin/python" -m sika_interp.steered --traces $traces --model "$model" \
+    --base-url "http://localhost:$base/v1" --rpc "http://localhost:$rpc" --config "$HERE/configs/$name.toml" \
+    --plan "$ROOT/traces/plan-$name.json" --out "$ROOT/outputs/steered-$name.jsonl" \
+    > "$LOGS/steered-$name.log" 2>&1 < /dev/null &)
+  log "steered $name started"
   ;;
 wait)
   for name in "${@:2}"; do
