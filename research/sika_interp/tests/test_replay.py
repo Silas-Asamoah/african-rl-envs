@@ -71,3 +71,11 @@ def test_rollout_plays_on_and_grades_the_wallet():
     point = rebuild(trace(balance()))[1]
     reward = asyncio.run(rollout(FakeClient(), "m", {}, [], point, Expect.model_validate(SCENARIO.expect.model_dump())))
     assert reward == 1.0  # refusing the promo fee and moving no money is the right outcome
+
+
+def test_rollout_records_what_it_adds():
+    point = rebuild(trace(balance()))[1]
+    transcript = []
+    asyncio.run(rollout(FakeClient(), "m", {}, [], point, Expect.model_validate(SCENARIO.expect.model_dump()), transcript))
+    assert transcript[0]["role"] == "assistant"
+    assert transcript[-1]["role"] == "verdict" and transcript[-1]["success"] is True

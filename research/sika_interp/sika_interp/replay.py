@@ -92,8 +92,12 @@ def rebuild(trace: dict) -> list[Point]:
     return points
 
 
-async def rollout(client, model: str, sampling: dict, tools: list[dict], point: Point, expect: Expect) -> float:
-    """Play the episode on from `point`; the outcome reward (1 success, 0 miss, −1 harmful)."""
+async def rollout(
+    client, model: str, sampling: dict, tools: list[dict], point: Point, expect: Expect, transcript: list | None = None
+) -> float:
+    """Play the episode on from `point`; the outcome reward (1 success, 0 miss, −1 harmful).
+    `transcript`, if given, receives every message added after `point` and then the verdict's
+    problems as {"role": "verdict", ...}."""
     state = point.state.model_copy(deep=True)
     messages = list(point.messages)
     said = list(point.said)
@@ -127,6 +131,9 @@ async def rollout(client, model: str, sampling: dict, tools: list[dict], point: 
         messages.append({"role": "user", "content": scripted_reply(state)})
         user_used += 1
     verdict = evaluate(state, expect, "\n".join(said))
+    if transcript is not None:
+        transcript.extend(messages[len(point.messages) :])
+        transcript.append({"role": "verdict", "success": verdict.success, "harmful": verdict.harmful, "problems": verdict.problems})
     return 1.0 if verdict.success else -1.0 if verdict.harmful else 0.0
 
 
