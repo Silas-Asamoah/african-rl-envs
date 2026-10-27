@@ -67,7 +67,7 @@
 
   <section id="circuit">
     <h2>Decision circuit</h2>
-    <p class="def">Neurons with the largest steering effect at one decision, by layer. Edge to the top: measured margin shift at this decision (lime toward the right move, coral away). Edges between neurons: direct-path weight (write · read, from the weights; not specific to this input). Hover to trace, click to open, ⌘/ctrl-click to pin.</p>
+    <p class="def">Neurons with the largest steering effect at one decision, by layer. Edge to the top: measured margin shift at this decision (lime toward the right move, coral away). Edges between neurons: direct-path weight (write · read, from the weights; not specific to this input), dashed when negative. Node: solid when its shift beats 97% of random directions at its layer; placed across by its position on the neuron map. Hover to trace, click to open, ⌘/ctrl-click to pin.</p>
     <div class="controls" id="g-controls"></div>
     <div class="circuit-wrap"><svg id="graph" role="img" aria-label="Decision circuit"></svg><aside class="pins" id="pins"><p class="def">Pinned neurons appear here.</p></aside></div>
   </section>

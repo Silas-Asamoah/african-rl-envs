@@ -17,7 +17,7 @@ const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (
 let DATA = null;
 let model = store.get("sika-model", "qwen");
 const files = {};
-const S = { margin: "right", sign: 1, dose: 2, lang: "all", family: "all", kind: "all", group: "all", sort: "layer", colour: "shift", decision: null, neuron: null, pins: [], K: 24 };
+const S = { margin: "right", sign: 1, dose: 2, lang: "all", family: "all", kind: "all", group: "all", sort: "layer", colour: "pct", decision: null, neuron: null, pins: [], K: 24 };
 
 async function getJSON(path) {
   if (!(path in files)) files[path] = fetch(path).then(r => { if (!r.ok) throw new Error(path + " " + r.status); return r.json(); });
@@ -301,12 +301,13 @@ async function renderDecision() {
   }
   const T = det.text || {};
   const rule = dd.rule ? `<div>${(dd.rule.right || []).map(x => `<span class="chip r">${esc(x)}</span>`).join("")}${dd.rule.right ? "" : '<span class="chip r">anything but the harmful moves</span>'}${(dd.rule.harm || []).map(x => `<span class="chip h">${esc(x)}</span>`).join("")}</div>` : '<span class="def">No right/harm rule for this task.</span>';
-  box.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline"><h3>${esc(dd.id)}</h3><span class="def">${KIND[dd.kind]} · turn ${dd.turn} · <span style="color:${COL[dd.language]}">${LANG[dd.language]}</span> · did ${esc(dd.took.join(", "))} · outcome ${dd.reward > 0 ? "right" : dd.reward < 0 ? "harmful" : "not right"} · right margin ${fx(dd.right_margin)}${dd.harm_margin != null ? " · harm margin " + fx(dd.harm_margin) : ""}${dd.flagged ? " · flagged: batched route further from the plain pass than one-token-at-a-time" : ""}</span></div>
+  box.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline"><h3>${esc(dd.id)}</h3><button id="copy-link" style="font:inherit;font-size:11px;background:none;border:1px solid ${COL.line};color:${COL.ink2};cursor:pointer;padding:1px 8px">copy link</button><span class="def">${KIND[dd.kind]} · turn ${dd.turn} · <span style="color:${COL[dd.language]}">${LANG[dd.language]}</span> · did ${esc(dd.took.join(", "))} · outcome ${dd.reward > 0 ? "right" : dd.reward < 0 ? "harmful" : "not right"} · right margin ${fx(dd.right_margin)}${dd.harm_margin != null ? " · harm margin " + fx(dd.harm_margin) : ""}${dd.flagged ? " · flagged: batched route further from the plain pass than one-token-at-a-time" : ""}</span></div>
   <div class="dgrid"><div class="box"><h4>request</h4><div class="text">${esc(T.request)}</div>${T.before ? `<h4 style="margin-top:8px">before this turn (${esc(T.before_role)})</h4><div class="text">${esc(T.before)}</div>` : ""}</div>
   <div class="box"><h4>model's reasoning at this turn</h4><div class="text">${esc(T.reasoning)}</div><h4 style="margin-top:8px">${T.did_reply ? "reply" : "call"}</h4><div class="text">${esc((T.did || []).join("\n"))}</div></div></div>
   <div class="dgrid"><div class="box"><h4>right (lime) · harmful (coral)</h4>${rule}<h4 style="margin-top:8px">unsteered · plain forward pass</h4>${moveBars(labels, base, { order: top.slice(0, 8), rule: dd.rule || {} })}</div>
   <div class="box"><h4>zero push · batched route (shifts are measured from this)</h4>${zero ? moveBars(labels, zero, { order: top.slice(0, 8), rule: dd.rule || {} }) : '<span class="def">–</span>'}</div></div>
   ${pushes || '<p class="def">Select a neuron row to see its pushes here.</p>'}`;
+  $("copy-link").onclick = e => { const url = linkHere(); navigator.clipboard.writeText(url).then(() => { e.target.textContent = "copied"; }, () => { prompt("Link", url); }); };
 }
 function controlsStrip(det, dd, n) {
   const key = S.margin + "_controls"; if (!det[key]) return "";
@@ -341,8 +342,16 @@ async function renderCircuit() {
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const yOf = L => H - 40 - (H - 120) * (L / Math.max(1, layers - 1));
   const byLayer = {}; ranked.forEach(r => (byLayer[m.raw.neurons[r[0]][0]] ||= []).push(r));
+  // x: the neuron's place in its layer on the neuron map (first principal component of the
+  // layer's write directions), so neighbours write alike; nodes that would overlap are nudged.
+  const MP = DATA.models[model].map, placeOf = new Map();
+  if (MP) MP.layer.forEach((L, k) => placeOf.set(L + ":" + MP.neuron[k], MP.x[k] / 127));
   const pos = new Map();
-  for (const [L, rs] of Object.entries(byLayer)) { rs.sort((a, b) => a[1] - b[1]); rs.forEach((r, j) => pos.set(r[0], [80 + (W - 160) * ((j + 0.5) / rs.length), yOf(+L)])); }
+  for (const [L, rs] of Object.entries(byLayer)) {
+    const xs = rs.map(r => [r[0], 80 + (W - 160) * (0.5 + 0.48 * (placeOf.get(m.raw.neurons[r[0]].join(":")) ?? 0))]).sort((a, b) => a[1] - b[1]);
+    for (let j = 1; j < xs.length; j++) xs[j][1] = Math.max(xs[j][1], xs[j - 1][1] + 26);
+    xs.forEach(([n, x]) => pos.set(n, [Math.min(W - 30, x), yOf(+L)]));
+  }
   const out = [W / 2, 30], mx = Math.max(...ranked.map(r => Math.abs(r[1])), 1e-6);
   let g = "";
   for (let L = 0; L < layers; L += 4) g += `<line x1="40" x2="${W - 20}" y1="${yOf(L)}" y2="${yOf(L)}" stroke="${COL.grid}"/><text x="8" y="${yOf(L) + 4}">L${L}</text>`;
@@ -358,7 +367,8 @@ async function renderCircuit() {
   for (const [n, v, p] of ranked) {
     const [x, y] = pos.get(n), col = towardGood(v) >= 0 ? COL.good : COL.harm, [L, i] = m.raw.neurons[n];
     edges += `<path class="edge" data-n="${n}" d="M${x},${y} C${x},${(y + out[1]) / 2} ${out[0]},${(y + out[1]) / 2 + 40} ${out[0]},${out[1] + 12}" fill="none" stroke="${col}" stroke-opacity="0.55" stroke-width="${0.6 + 5 * Math.abs(v) / mx}"/>`;
-    nodes += `<g class="node" data-n="${n}" style="cursor:pointer"><circle cx="${x}" cy="${y}" r="${5 + 9 * Math.sqrt(Math.abs(v) / mx)}" fill="${col}" fill-opacity="${p >= 97 ? 0.95 : 0.45}" stroke="${S.pins.includes(n) ? COL.ink : "none"}" stroke-width="2"/><text x="${x}" y="${y - 12 - 6 * Math.sqrt(Math.abs(v) / mx)}" text-anchor="middle">L${L}·${i}</text></g>`;
+    const rank = ranked.findIndex(r => r[0] === n);
+    nodes += `<g class="node" data-n="${n}" style="cursor:pointer"><circle cx="${x}" cy="${y}" r="${5 + 9 * Math.sqrt(Math.abs(v) / mx)}" fill="${col}" fill-opacity="${p >= 97 ? 0.95 : 0.45}" stroke="${S.pins.includes(n) ? COL.ink : "none"}" stroke-width="2"/>${rank < 12 ? `<text x="${x}" y="${y - 12 - 6 * Math.sqrt(Math.abs(v) / mx)}" text-anchor="middle">L${L}·${i}</text>` : ""}</g>`;
   }
   const dd = D[d];
   g += wires + edges + nodes + `<g><rect x="${out[0] - 120}" y="${out[1] - 16}" width="240" height="28" fill="${COL.line}" rx="3"/><text x="${out[0]}" y="${out[1] + 2}" text-anchor="middle" class="val">${esc(dd.family)} · ${LANG[dd.language]} · ${S.margin} margin ${fx(dd[S.margin + "_margin"], 1)}</text></g>`;
@@ -573,4 +583,24 @@ function render() {
 }
 document.querySelectorAll(".toggle button").forEach(b => b.addEventListener("click", () => { model = b.dataset.model; store.set("sika-model", model); render(); }));
 addEventListener("resize", () => { if (DATA) { drawMap(DATA.models[model].map); if (SM) { drawMatrix(); renderCircuit(); } } });
-fetch("data.json").then(r => r.json()).then(d => { DATA = d; if (!DATA.models[model]) model = "qwen"; render(); }).catch(e => { document.querySelector("main").insertAdjacentHTML("afterbegin", `<p class="def">Could not load data.json: ${esc(e.message)}</p>`); });
+// Shareable links: ?model=ministral&d=eval/promo_fee/en-tw/1000006@first_move&n=27:2472 (+ optional sign, dose, margin)
+const Q = new URLSearchParams(location.search);
+if (Q.get("model")) model = Q.get("model");
+for (const k of ["sign", "dose"]) if (Q.get(k) != null) S[k] = +Q.get(k);
+if (Q.get("margin")) S.margin = Q.get("margin");
+async function applyLink() {
+  if (!Q.get("d") && !Q.get("n")) return;
+  const m = await loadMatrix();
+  if (Q.get("d")) { const [id, kind] = Q.get("d").split("@"); const i = m.raw.decisions.findIndex(x => x.id === id && (!kind || x.kind === kind)); if (i >= 0) S.decision = i; }
+  if (Q.get("n")) { const [L, n] = Q.get("n").split(":").map(Number); const j = m.raw.neurons.findIndex(x => x[0] === L && x[1] === n); if (j >= 0) S.neuron = j; }
+  await drawMatrix(); await renderDecision(); await renderCircuit(); if (S.neuron != null) await renderDashboard(S.neuron);
+}
+function linkHere() {
+  if (!SM) return location.href;
+  const u = new URL(location.href.split("?")[0].split("#")[0]); u.searchParams.set("model", model);
+  if (S.decision != null) { const d = SM.raw.decisions[S.decision]; u.searchParams.set("d", d.id + "@" + d.kind); }
+  if (S.neuron != null) u.searchParams.set("n", SM.raw.neurons[S.neuron].join(":"));
+  u.searchParams.set("sign", S.sign); u.searchParams.set("dose", S.dose); u.searchParams.set("margin", S.margin);
+  return u.toString();
+}
+fetch("data.json").then(r => r.json()).then(d => { DATA = d; if (!DATA.models[model]) model = "qwen"; render(); applyLink().catch(() => {}); }).catch(e => { document.querySelector("main").insertAdjacentHTML("afterbegin", `<p class="def">Could not load data.json: ${esc(e.message)}</p>`); });
