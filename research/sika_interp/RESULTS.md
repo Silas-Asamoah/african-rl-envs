@@ -4,10 +4,12 @@ What Qwen3.5-9B and Ministral 3 8B Reasoning compute when a sika-agent request c
 English, Twi or Twi–English. Both models were served from our own copies (vLLM 0.32.0 on a
 Prime Intellect H200; each model's recommended sampling, reasoning on); activations were
 recorded on Modal from the same weights, and every turn re-renders to the exact prompt length
-the server reported. Run 2026-10-26/27.
+the server reported. Run 2026-10-26/27; word-level, masking, receiver-head, attention-blocking
+and steering results re-run on 2026-10-27 after a word-tagger fix (product names such as
+"solar kit" were unplaced; 94 of 9,579 Twi–English words changed).
 
-Twi and Twi–English text quoted here is synthetic or model-written and has not yet been
-checked by a native speaker.
+Twi and Twi–English text quoted here is synthetic or model-written. A Twi reader checked a
+sample of the word tags and the Twi shown in the viewer.
 
 ## Behaviour on matched twins
 
@@ -42,39 +44,64 @@ tool calls and are left out. Our self-hosted Qwen reproduces its published hoste
    35% / 61% for Ministral; scam-or-not at 99 / 96 / 99% for Qwen and 91 / 74 / 92% for
    Ministral (base rate 65%).
 
-4. **In Twi–English, the English words carry the scam.** Masking a Twi–English scam request's
-   English words drops the English-trained scam signal by 0.42–0.45 at layers 20–24 for Qwen
-   (95% CI ±0.05) and by 0.50–0.67 at layers 12–28 for Ministral (to about zero); masking all
-   its Twi words changes Qwen's signal by about 0 and Ministral's by 0.11–0.25. Masking the
-   same number of random words (about half English) drops it nearly as much as masking the
-   English. Non-scam controls stay clean from layer 20 (Qwen) and at every layer (Ministral).
+4. **In Twi–English, the English words carry the scam.** Over 210 Twi–English scam and
+   injection requests, masking a request's English words drops the English-trained scam
+   signal by 0.45 and 0.47 at layers 20 and 24 for Qwen (95% CI −0.49 to −0.42, −0.51 to
+   −0.43) and by 0.52–0.74 at layers 8–28 for Ministral (to about zero); masking all its Twi
+   words changes Qwen's signal by +0.04 and +0.01 there and Ministral's by −0.14 to −0.28.
+   Masking the same number of random words (about half English) drops it nearly as much as
+   masking the English (Qwen −0.35, −0.44). Non-scam controls stay clean from layer 20 (Qwen)
+   and at every layer (Ministral).
 
 5. **English words inside Twi stay English; mixed words become Twi.** A probe telling English
    requests' tokens from Twi ones reads the English words of Twi–English requests as Twi only
-   17–21% of the time at every layer, Twi words 94–97%, and English stems in Twi grammar
-   ("a-send-i") 92–96%. The representation jumps more between tokens at switch points than
+   17–21% of the time at every layer, Twi words 93–97%, and English stems in Twi grammar
+   ("a-send-i") 89–94% (all 1,800 study requests per model). The representation jumps more between tokens at switch points than
    elsewhere (Qwen 0.45–0.47 against 0.36–0.42 at layers 20–32; Ministral 0.55–0.64 against
    0.48–0.55 at every layer). No neurons respond strongly to switch points as such (Qwen's
    largest |d| is 1.4); many track a word's language (|d| up to 3.3).
 
 6. **For Qwen, where a Twi–English request lands predicts the outcome, at reading time.**
-   Within task type (15 types, 450 Twi–English episodes with both outcomes), the requests Qwen
-   gets wrong sit nearer their Twi twin than their English twin by 0.24–0.30 (centred cosine
-   margin) at the end of the request, layers 16–32, p = 0.0002 by within-type permutation,
-   surviving correction for 18 tests. By the end of its reasoning the difference is gone (p >
-   0.7). For Ministral the direction is the same but small (−0.06, p ≥ 0.11).
+   Within task type (15 types, 450 Twi–English episodes with both outcomes, 156 not right),
+   the requests Qwen gets wrong sit nearer their Twi twin than their English twin: the centred
+   cosine margin (to the English twin minus to the Twi twin, centred within type) is 0.12–0.15
+   lower for failures at the end of the request, layers 16–32, about a fifth to a quarter of a
+   within-type standard deviation; p ≤ 0.0005 at every one of those layers by within-type
+   permutation (4,000), surviving correction for 18 tests. (An earlier version of this file
+   gave 0.24–0.30: that was the standardised difference, mislabelled as margin units.) By the
+   end of its reasoning the difference is gone (−0.01 to +0.01, p > 0.7). For Ministral the
+   direction is the same but small (−0.03 to −0.05, p ≥ 0.09).
 
 7. **When they pay a scammer in English, both models had flagged the scam.** The English scam
    signal at the end of the request is 0.99 in the English episodes where the model then paid
    after the user insisted (Ministral 21 cases, Qwen 4): they understood, then gave in.
 
-8. **Anchors: Qwen's failures turn on a step; Ministral's Twi failures start at the request.**
+8. **Receiver heads attend less to the request the more Twi it is.** Following Thought
+   Anchors, receiver heads are the full-attention heads whose attention concentrates on a few
+   sentences (top 20 by kurtosis of the attention each sentence receives from later ones, over
+   600 first turns per model). Per sentence of the user's request, their attention is lower
+   in Twi–English than in the English twin and lower again in Twi: Qwen 1.80 / 1.29 / 0.92
+   ×10⁻³ (Twi–English − English −0.52, 95% CI −0.64 to −0.39; Twi − English −0.88, −1.00 to
+   −0.77; 200 twins), Ministral 0.56 / 0.47 / 0.34 (−0.09, −0.12 to −0.06; −0.22, −0.25 to
+   −0.19). Qwen's receiver heads attend most to its own reasoning (the top sentence in about
+   80% of turns, often a plan step); Ministral's to the system prompt (about 95%).
+
+9. **The models name the wrong language.** Qwen's reasoning names a language in 555 of 600
+   Twi and 501 of 600 Twi–English episodes: usually Twi, but also Ga (79, 93), Ewe (27, 43)
+   and Dagbani (22, 28), sometimes with mistranslation ("no ma me" glossed as "my number in
+   Ga"). Naming another language doesn't track Qwen's outcome (Twi 50% vs 56% right; Twi–English
+   73% vs 74%). Ministral rarely names a language.
+
+10. **Anchors: Qwen's failures turn on a step; Ministral's Twi failures start at the request.**
    Replaying episodes ten times from every turn: in a Twi–English promo-fee task Qwen paid, its
    first turn decides it (mean outcome +0.6 replaying from turn 0, −0.8 from turn 1); in a Twi
    fake-refund task, turn 2 does (+1.0 from turn 2, −0.8 from turn 3). Ministral's Twi and
    Twi–English fake-refund episodes are harmful from every turn: its reasoning reads the scam as
    an ordinary transfer request ("Dzifa Quaye wants to send GH₵1,450 to …") and initiates the
-   transfer at once, while in English it first checks the transaction history.
+   transfer at once, while in English it first checks the transaction history. Blocking
+   attention to a step (every head of every full-attention layer) agrees with deleting it:
+   for Ministral, the turn that initiates the transfer moves the next turn by KL 1.5–1.8 in
+   every Twi and Twi–English episode against at most 0.82 for any link in English.
 
 ## Steering
 
@@ -126,6 +153,9 @@ percentiles in steps of about 3.
 - Word tags come from heuristics (`words.py`) checked against the single-language wording
   pools; a native speaker should spot-check them.
 - Neuron-explorer's and Thought Anchors' methods were rebuilt for agents; no code was copied.
-  Attention-suppression links and receiver heads were not run; links come from deleting a step.
+  Attention blocking covers every head of the full-attention layers: all 34 for Ministral,
+  8 of 32 for Qwen (its linear-attention layers still carry the blocked step). Receiver-head
+  attention is read through the model's own attention interface, block by block (identical
+  to eager attention: same top heads, kurtosis r = 0.99999).
 - Ministral reasons only with Mistral's reasoning prompt appended as a structured thinking
   block (`serving.py`).
