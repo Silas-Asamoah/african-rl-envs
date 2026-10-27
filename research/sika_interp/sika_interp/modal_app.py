@@ -641,16 +641,7 @@ class Model:
 
         turns_ = episode["turns"]  # [{messages, response}] in order
         last = turns_[-1]["messages"] + [dict(turns_[-1]["response"], role="assistant")]
-        # Steps: every message after the system prompt, a model turn grouped with its tool results.
-        steps, k = [], 1
-        while k < len(last):
-            group = [k]
-            if last[k]["role"] == "assistant":
-                while k + 1 < len(last) and last[k + 1]["role"] == "tool":
-                    k += 1
-                    group.append(k)
-            steps.append(group)
-            k += 1
+        steps = episode_steps(last)
         base = [self.turn_logprobs(t["messages"], episode["tools"], t["response"]) for t in turns_]
         links, skipped = [], 0
         for i, group in enumerate(steps):
@@ -683,6 +674,189 @@ class Model:
             )
         turn_step = [next(i for i, g in enumerate(steps) if g[0] == len(t["messages"])) for t in turns_]
         return {"task_id": episode["task_id"], "steps": described, "turn_step": turn_step, "links": links, "skipped": skipped}
+
+    def to_token(self, ids: list[int]):
+        """char → index of the token holding that character of decode(ids)."""
+        lengths: dict[int, int] = {}
+
+        def decoded(k: int) -> int:
+            if k not in lengths:
+                lengths[k] = len(self.tok.decode(ids[:k]))
+            return lengths[k]
+
+        def find(c: int) -> int:
+            lo, hi = 0, len(ids)  # first k with decode(ids[:k+1]) longer than c
+            while lo < hi:
+                mid = (lo + hi) // 2
+                lo, hi = (lo, mid) if decoded(mid + 1) > c else (mid + 1, hi)
+            return min(lo, len(ids) - 1)
+
+        return find
+
+    def full_attention_modules(self) -> list:
+        """(layer index, attention module) for layers with full softmax attention."""
+        return [(i, layer.self_attn) for i, layer in enumerate(self.layers) if hasattr(layer, "self_attn")]
+
+    @modal.method()
+    def suppress_links(self, episode: dict) -> dict:
+        """Thought-anchors links by blocking attention: for each step i and each later model
+        turn j, the mean KL divergence over turn j's tokens between the turn as the model saw
+        it and with every later token barred from attending to step i's tokens, in every head
+        of every full-attention layer (Qwen: 8 of 32; its linear-attention layers still carry
+        the step). Steps as in `step_links`; the request can be blocked too."""
+        import torch
+
+        from sika_interp.spans import message_spans, to_tokens
+
+        turns_ = episode["turns"]
+        last = turns_[-1]["messages"] + [dict(turns_[-1]["response"], role="assistant")]
+        steps = episode_steps(last)
+        modules = self.full_attention_modules()
+        state: dict = {"mask": None}
+
+        def swap(module, args, kwargs):
+            if state["mask"] is not None:
+                kwargs["attention_mask"] = state["mask"]
+            return args, kwargs
+
+        handles = [m.register_forward_pre_hook(swap, with_kwargs=True) for _, m in modules]
+        dtype = next(self.model.parameters()).dtype
+        links, missing, checks = [], [], []
+        try:
+            for j, t in enumerate(turns_):
+                prompt, full = self.render_turn(t["messages"], episode["tools"], t["response"])
+                T = len(full)
+                text = self.tok.decode(full)
+                spans = message_spans(text, t["messages"])
+                find = self.to_token(full)
+                causal = torch.ones(T, T, dtype=torch.bool, device="cuda").tril()
+
+                def logprobs(allowed):
+                    mask = torch.zeros(1, 1, T, T, dtype=dtype, device="cuda")
+                    state["mask"] = mask.masked_fill_(~allowed, torch.finfo(dtype).min)
+                    lp = self.turn_logprobs(t["messages"], episode["tools"], t["response"])
+                    state["mask"] = None
+                    return lp
+
+                base = self.turn_logprobs(t["messages"], episode["tools"], t["response"])
+                if j == 0:  # the hooked path with a plain causal mask must match the unhooked one
+                    same = logprobs(causal)
+                    checks.append(round(float((base.exp() * (base - same)).sum(-1).mean()), 6))
+                for i, group in enumerate(steps):
+                    if group[0] >= len(t["messages"]):
+                        continue
+                    mine = [s for s in spans if s.message in group]
+                    if not mine:
+                        missing.append([i, j])
+                        continue
+                    (a, _), (_, b) = to_tokens([mine[0]], find)[0], to_tokens([mine[-1]], find)[0]
+                    allowed = causal.clone()
+                    allowed[b:, a:b] = False
+                    altered = logprobs(allowed)
+                    kl = (base.exp() * (base - altered)).sum(-1).mean()
+                    links.append([i, j, round(float(kl), 4), b - a])
+        finally:
+            for h in handles:
+                h.remove()
+        return {"task_id": episode["task_id"], "links": links, "missing": missing, "check_kl": checks,
+                "layers_blocked": [i for i, _ in modules], "turn_step": [next(i for i, g in enumerate(steps) if g[0] == len(t["messages"])) for t in turns_]}
+
+    @modal.method()
+    def sentence_attention(self, items: list[dict], proximity: int = 4) -> list[dict]:
+        """For receiver heads (Thought Anchors): each item's full turn (prompt and response)
+        split into sentences (system prompt, request, tool results, reasoning, action); per
+        full-attention head, the mean attention from each sentence's tokens to each earlier
+        sentence's, then each sentence's vertical score (mean attention it receives from
+        sentences at least `proximity` later) and the kurtosis of those scores per head."""
+        import numpy as np
+        import torch
+
+        from sika_interp.spans import message_spans, sentences, to_tokens
+
+        try:
+            self.model.set_attn_implementation("eager")
+        except Exception:  # noqa: BLE001 - older API: the attention modules read the shared config
+            self.model.config.get_text_config()._attn_implementation = "eager"
+        modules = self.full_attention_modules()
+        out = []
+        try:
+            for item in items:
+                messages = item["messages"] + [dict(item["response"], role="assistant")]
+                prompt, full = self.render_turn(item["messages"], item["tools"], item["response"])
+                text = self.tok.decode(full)
+                spans = [s for sp in message_spans(text, messages) for s in sentences(text, sp)]
+                ranges = to_tokens(spans, self.to_token(full))
+                C, T = len(spans), len(full)
+                M = torch.zeros(T, C, device="cuda")
+                for c, (a, b) in enumerate(ranges):
+                    M[a:b, c] = 1.0 / (b - a)
+                grids: dict[int, torch.Tensor] = {}
+
+                def keep(i):
+                    def hook(module, args, output):
+                        weights = output[1]
+                        if weights is None:
+                            raise RuntimeError("attention weights not returned; eager attention is off")
+                        # grid[h, a, b] = mean attention from sentence a's tokens to sentence b's
+                        to_cols = (weights[0] @ M.to(weights.dtype)).float()  # [heads, T, C]
+                        grids[i] = torch.einsum("ta,htc->hac", M, to_cols).cpu()
+                        return (output[0], None) + tuple(output[2:])
+
+                    return hook
+
+                handles = [m.register_forward_hook(keep(i)) for i, m in modules]
+                try:
+                    with torch.no_grad():
+                        self.model(input_ids=torch.tensor([full], device="cuda"))
+                finally:
+                    for h in handles:
+                        h.remove()
+                grid = torch.stack([grids[i] for i, _ in modules]).numpy()  # [layers, heads, C, C]: from row to column
+                rows, cols = np.indices((C, C))
+                far = rows >= cols + proximity
+                masked = np.where(far, grid, np.nan)
+                with np.errstate(invalid="ignore"):
+                    vertical = np.nanmean(masked, axis=2)  # mean over later rows → [layers, heads, C]
+                v = vertical[..., : max(C - proximity, 1)]
+                mu, sd = np.nanmean(v, -1, keepdims=True), np.nanstd(v, -1, keepdims=True)
+                kurt = np.nanmean(((v - mu) / np.where(sd > 0, sd, np.nan)) ** 4, -1) - 3
+                out.append(
+                    {
+                        "task_id": item["task_id"],
+                        "language": item["language"],
+                        "turn": item.get("index", 0),
+                        "layers": [i for i, _ in modules],
+                        "sentences": [
+                            {"text": text[s.start : s.end][:300], "message": s.message, "part": s.part,
+                             "role": messages[s.message]["role"], "tokens": b - a}
+                            for s, (a, b) in zip(spans, ranges)
+                        ],
+                        "vertical": vertical.astype(np.float16),
+                        "kurtosis": kurt.astype(np.float32),
+                        "prompt_tokens": len(prompt),
+                    }
+                )
+        finally:
+            try:
+                self.model.set_attn_implementation("sdpa")
+            except Exception:  # noqa: BLE001
+                self.model.config.get_text_config()._attn_implementation = "sdpa"
+        return out
+
+
+def episode_steps(messages: list[dict]) -> list[list[int]]:
+    """An episode's steps: every message after the system prompt, a model turn grouped with
+    its tool results. Each step is a list of message indices."""
+    steps, k = [], 1
+    while k < len(messages):
+        group = [k]
+        if messages[k]["role"] == "assistant":
+            while k + 1 < len(messages) and messages[k + 1]["role"] == "tool":
+                k += 1
+                group.append(k)
+        steps.append(group)
+        k += 1
+    return steps
 
 
 class Pushes:
@@ -1603,10 +1777,8 @@ def steer_all(
     print(f"saved {path}")
 
 
-@app.local_entrypoint()
-def anchors(traces: str, model: str, task_ids: str):
-    """Step links (`step_links`) for the episodes `task_ids` (comma-separated) of `model` in
-    `traces`, one GPU container per episode; saved locally as anchors-links-<model>.json."""
+def anchor_episodes(traces: str, model: str, task_ids: str) -> list[dict]:
+    """The episodes `task_ids` (comma-separated) of `model` in `traces`, turn by turn."""
     wanted = task_ids.split(",")
     episodes = []
     for path in traces.split(","):
@@ -1615,8 +1787,85 @@ def anchors(traces: str, model: str, task_ids: str):
             if data["id"] in wanted and trace["agent"]["config"]["model"] == model:
                 ts = turns(trace)
                 episodes.append(
-                    {"task_id": data["id"], "tools": ts[0].tools, "turns": [{"messages": t.messages, "response": t.response} for t in ts]}
+                    {"task_id": data["id"], "language": data["language"], "tools": ts[0].tools,
+                     "turns": [{"messages": t.messages, "response": t.response} for t in ts]}
                 )
+    return episodes
+
+
+@app.local_entrypoint()
+def suppress(traces: str, model: str, task_ids: str, out: str = ""):
+    """Attention-blocking step links (`suppress_links`) for the episodes `task_ids` of `model`
+    in `traces`, one GPU container per episode; saved locally."""
+    results = list(Model(model_id=model).suppress_links.map(anchor_episodes(traces, model, task_ids)))
+    path = Path(out or f"anchors-suppress-{model.split('/')[-1]}.json")
+    path.write_text(json.dumps(results, ensure_ascii=False))
+    for r in results:
+        strongest = sorted(r["links"], key=lambda x: -x[2])[:4]
+        print(f"{r['task_id']}: {len(r['links'])} links, check KL {r['check_kl']}, unplaced {len(r['missing'])}; strongest {strongest}")
+    print(f"layers blocked: {results[0]['layers_blocked'] if results else []}\nsaved {path}")
+
+
+@app.local_entrypoint()
+def receivers(traces: str, model: str, task_ids: str, seeds: str = "1000000,1000001,1000006", top: int = 20, batch: int = 30, out: str = ""):
+    """Receiver heads (Thought Anchors) for `model`: `sentence_attention` on the first turn of
+    every episode with these seeds (all families and languages) and the last turn of the
+    anchor episodes `task_ids`; heads ranked by mean kurtosis of their vertical scores, the
+    top `top` taken as receiver heads, and every sentence scored by them. Saved locally."""
+    import numpy as np
+
+    wanted = {int(s) for s in seeds.split(",")}
+    items = [dict(e, kind="first", index=0) for e in first_turns(traces.split(",")).get(model, []) if e["seed"] in wanted]
+    for ep in anchor_episodes(traces, model, task_ids):
+        t = ep["turns"][-1]
+        items.append({"task_id": ep["task_id"], "language": ep["language"], "kind": "last", "index": len(ep["turns"]) - 1,
+                      "messages": t["messages"], "tools": ep["tools"], "response": t["response"]})
+    calls = [Model(model_id=model).sentence_attention.spawn(items[i : i + batch]) for i in range(0, len(items), batch)]
+    rows = [r for c in calls for r in c.get()]
+    for r, item in zip(rows, items):
+        r["kind"] = item["kind"]
+    layers = rows[0]["layers"]
+    kurt = np.nanmean(np.stack([r["kurtosis"] for r in rows]), 0)  # [layers, heads]
+    order = np.dstack(np.unravel_index(np.argsort(-np.nan_to_num(kurt, nan=-np.inf), axis=None), kurt.shape))[0]
+    heads = [(int(a), int(b)) for a, b in order[:top]]
+    result = {
+        "model": model,
+        "layers": layers,
+        "kurtosis": np.round(kurt, 3).tolist(),
+        "receivers": [{"layer": layers[a], "head": b, "kurtosis": round(float(kurt[a, b]), 3)} for a, b in heads],
+        "items": [],
+    }
+    for r in rows:
+        v = r["vertical"].astype(np.float32)
+        by_head = np.stack([v[a, b] for a, b in heads])  # [top, sentences]
+        score = np.nanmean(by_head, 0)
+        result["items"].append(
+            {k: r[k] for k in ("task_id", "language", "kind", "turn", "prompt_tokens")}
+            | {"sentences": [dict(s, score=None if np.isnan(x) else round(float(x), 5)) for s, x in zip(r["sentences"], score)],
+               "by_head": np.round(np.nan_to_num(by_head, nan=-1), 5).tolist()}
+        )
+    path = Path(out or f"receivers-{model.split('/')[-1]}.json")
+    path.write_text(json.dumps(result, ensure_ascii=False))
+    print(f"{model}: {len(rows)} turns; top receiver heads (layer, head, kurtosis): "
+          + ", ".join(f"L{h['layer']}H{h['head']} {h['kurtosis']:.1f}" for h in result["receivers"][:8]))
+    print(f"saved {path}")
+
+
+@app.local_entrypoint()
+def profile_steer(traces: str, model: str, way: str = "tiled", neurons: str = "8:1,16:2,24:3", gpu: str = "L40S"):
+    """Time the parts of one batch of pushes at the first decision found in `traces`."""
+    from sika_interp.decisions import collect
+
+    d = collect(traces.split(","), model, [1000000], ["send_money"])[0]
+    picked = [[int(a) for a in n.split(":")] for n in neurons.split(",")]
+    print(json.dumps(Model.with_options(gpu=gpu)(model_id=model).profile_moves.remote(d, picked, way), indent=1))
+
+
+@app.local_entrypoint()
+def anchors(traces: str, model: str, task_ids: str):
+    """Step links (`step_links`) for the episodes `task_ids` (comma-separated) of `model` in
+    `traces`, one GPU container per episode; saved locally as anchors-links-<model>.json."""
+    episodes = anchor_episodes(traces, model, task_ids)
     results = list(Model(model_id=model).step_links.map(episodes))
     out = Path(f"anchors-links-{model.split('/')[-1]}.json")
     out.write_text(json.dumps(results, ensure_ascii=False))
