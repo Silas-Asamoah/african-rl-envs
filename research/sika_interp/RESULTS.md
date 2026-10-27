@@ -185,9 +185,12 @@ two (layer 24 neuron 57, layer 20 neuron 0) leave it fluent but make it answer d
 no reasoning and no tool call in every replay. Among settings that leave the model working,
 outcome changes are small at this sample (30 decisions per push, 3–4 replays each) and not
 separable from the random controls: pushing Qwen's layer-19 neuron 4818 up moves Twi decisions
-from 68% to 55% right and from 13% to 25% harmful, the direction the steer lens predicts, but
-its 95% interval over decisions includes zero, and a random direction at the same layer moves
-Twi harm by a similar amount the other way. The transcripts for every replay are in the viewer.
+from 68% to 55% right and from 13% to 25% harmful, the direction the steer lens predicts. The
+paired 95% interval for that harm change (+2.5 to +30 points over 10 decisions) excludes zero,
+but a random direction at the same layer moves Twi harm by a similar amount the other way
+(−12.5 points, −30 to 0), and across the Qwen settings that leave the model working, 4 of 66
+intervals for picked neurons and 1 of 24 for random ones exclude zero, about what chance gives
+at 95%. The transcripts for every replay are in the viewer.
 
 ## Methods and caveats
 
