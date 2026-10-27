@@ -762,24 +762,52 @@ class Model:
                 "layers_blocked": [i for i, _ in modules], "turn_step": [next(i for i, g in enumerate(steps) if g[0] == len(t["messages"])) for t in turns_]}
 
     @modal.method()
-    def sentence_attention(self, items: list[dict], proximity: int = 4) -> list[dict]:
+    def sentence_attention(self, items: list[dict], proximity: int = 4, block: int = 512) -> list[dict]:
         """For receiver heads (Thought Anchors): each item's full turn (prompt and response)
         split into sentences (system prompt, request, tool results, reasoning, action); per
         full-attention head, the mean attention from each sentence's tokens to each earlier
         sentence's, then each sentence's vertical score (mean attention it receives from
-        sentences at least `proximity` later) and the kurtosis of those scores per head."""
+        sentences at least `proximity` later) and the kurtosis of those scores per head.
+
+        Attention is read through the model's own attention interface, so the queries and keys
+        are exactly the ones it uses (projected, normed, rotated, scaled). The output comes from
+        the usual fused kernel; the weights are recomputed `block` query rows at a time in fp32
+        and folded into the sentence grid, so a long episode never needs its whole T×T map
+        (18k tokens would be 41 GB per layer)."""
         import numpy as np
         import torch
+        import torch.nn.functional as F
+        from transformers import AttentionInterface
 
         from sika_interp.spans import message_spans, sentences, to_tokens
 
-        try:
-            self.model.set_attn_implementation("eager")
-        except Exception:  # noqa: BLE001 - older API: the attention modules read the shared config
-            self.model.config.get_text_config()._attn_implementation = "eager"
+        state: dict = {"M": None, "grids": {}}
+
+        def sentence_grid(module, query, key, value, attention_mask, scaling=None, dropout=0.0, **kwargs):
+            heads, kv_heads = query.shape[1], key.shape[1]
+            out = F.scaled_dot_product_attention(query, key, value, is_causal=query.shape[2] > 1, scale=scaling,
+                                                 enable_gqa=heads != kv_heads)
+            M = state["M"]
+            if M is not None and query.shape[2] == M.shape[0]:
+                T = query.shape[2]
+                q = query[0].float()
+                k = key[0].float().repeat_interleave(heads // kv_heads, dim=0)
+                grid = torch.zeros(heads, M.shape[1], M.shape[1], device=query.device)
+                cols = torch.arange(T, device=query.device)
+                for q0 in range(0, T, block):
+                    q1 = min(q0 + block, T)
+                    scores = (q[:, q0:q1] @ k.transpose(1, 2)) * (scaling if scaling is not None else q.shape[-1] ** -0.5)
+                    scores.masked_fill_(cols[None, None, :] > torch.arange(q0, q1, device=query.device)[None, :, None], float("-inf"))
+                    probs = scores.softmax(-1)  # [heads, rows, T]
+                    grid += torch.einsum("ta,htk->hak", M[q0:q1], probs) @ M
+                state["grids"][module.layer_idx] = grid.cpu()
+            return out.transpose(1, 2).contiguous(), None
+
+        AttentionInterface.register("sentence_grid", sentence_grid)
         modules = self.full_attention_modules()
         out = []
         try:
+            self.model.set_attn_implementation("sentence_grid")
             for item in items:
                 messages = item["messages"] + [dict(item["response"], role="assistant")]
                 prompt, full = self.render_turn(item["messages"], item["tools"], item["response"])
@@ -790,31 +818,13 @@ class Model:
                 M = torch.zeros(T, C, device="cuda")
                 for c, (a, b) in enumerate(ranges):
                     M[a:b, c] = 1.0 / (b - a)
-                grids: dict[int, torch.Tensor] = {}
-
-                def keep(i):
-                    def hook(module, args, output):
-                        weights = output[1]
-                        if weights is None:
-                            raise RuntimeError("attention weights not returned; eager attention is off")
-                        # grid[h, a, b] = mean attention from sentence a's tokens to sentence b's
-                        to_cols = (weights[0] @ M.to(weights.dtype)).float()  # [heads, T, C]
-                        grids[i] = torch.einsum("ta,htc->hac", M, to_cols).cpu()
-                        return (output[0], None) + tuple(output[2:])
-
-                    return hook
-
-                handles = [m.register_forward_hook(keep(i)) for i, m in modules]
-                try:
-                    with torch.no_grad():
-                        self.model(input_ids=torch.tensor([full], device="cuda"))
-                finally:
-                    for h in handles:
-                        h.remove()
-                grid = torch.stack([grids[i] for i, _ in modules]).numpy()  # [layers, heads, C, C]: from row to column
+                state["M"], state["grids"] = M, {}
+                with torch.no_grad():
+                    self.model(input_ids=torch.tensor([full], device="cuda"), logits_to_keep=1)
+                state["M"] = None
+                grid = torch.stack([state["grids"][getattr(m, "layer_idx", i)] for i, m in modules]).numpy()
                 rows, cols = np.indices((C, C))
-                far = rows >= cols + proximity
-                masked = np.where(far, grid, np.nan)
+                masked = np.where(rows >= cols + proximity, grid, np.nan)  # from row to column
                 with np.errstate(invalid="ignore"):
                     vertical = np.nanmean(masked, axis=2)  # mean over later rows → [layers, heads, C]
                 v = vertical[..., : max(C - proximity, 1)]
@@ -834,13 +844,12 @@ class Model:
                         "vertical": vertical.astype(np.float16),
                         "kurtosis": kurt.astype(np.float32),
                         "prompt_tokens": len(prompt),
+                        "tokens": T,
                     }
                 )
         finally:
-            try:
-                self.model.set_attn_implementation("sdpa")
-            except Exception:  # noqa: BLE001
-                self.model.config.get_text_config()._attn_implementation = "sdpa"
+            state["M"] = None
+            self.model.set_attn_implementation("sdpa")
         return out
 
 
