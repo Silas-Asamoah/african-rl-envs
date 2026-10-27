@@ -330,9 +330,9 @@ def card_file(runs: Path, key: str) -> list[dict] | None:
 
 
 def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
-    """Steered transcripts: writes steered-<key>.json (every replay's outcome and transcript,
-    trimmed) and returns the summary the page draws inline: per setting and request language,
-    replays that ended right, harmful or neither."""
+    """Steered transcripts: writes steered-<key>/<j>.json for each decision j (every setting's
+    replays there, outcome and trimmed transcript) and returns the summary the page draws
+    inline: per setting and request language, replays that ended right, harmful or neither."""
     path = runs / SOURCES["steered"].format(key=key)
     plan = _read(runs / SOURCES["plan"].format(key=key))
     if not path.exists() or not plan:
@@ -373,7 +373,13 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
     plan_settings = __import__("sika_interp.steered", fromlist=["settings"]).settings(plan)
     names = [s["name"] for s in plan_settings]
     decisions = [f"{d['task_id']}@{d['turn']}" for d in plan["decisions"]]
-    _dump(out / f"steered-{key}.json", {"settings": names, "decisions": decisions, "results": by})
+    # One file per decision (every setting's replays there): the page shows one decision at a
+    # time, and a whole run in one file passes Cloudflare Pages' 25 MiB limit.
+    folder = out / f"steered-{key}"
+    folder.mkdir(exist_ok=True)
+    for j, dk in enumerate(decisions):
+        _dump(folder / f"{j}.json", {"decision": dk, "results": {n: by[n][dk] for n in names if dk in by.get(n, {})}})
+    (out / f"steered-{key}.json").unlink(missing_ok=True)
     summary = {}
     for name in names:
         cells = {}
@@ -421,7 +427,7 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
                 gaps[side] |= _paired_gap(pooled, by.get(s["name"], {}), side, prefix="r")
         summary[s["name"]]["minus_en"] = gaps
     directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
-    return {"settings": names, "decisions": decisions, "summary": summary, "directions": directions,
+    return {"settings": names, "decisions": decisions, "folder": f"steered-{key}", "summary": summary, "directions": directions,
             "doses": plan["doses"], "samples": plan.get("samples"), "turn_cap": turn_cap}
 
 

@@ -364,10 +364,12 @@ const STB = { hi: { decision: null, setting: null, against: "unsteered" }, lo: {
 function renderSteered(M) {
   const any = Object.values(DATA.models).some(m => m.steered || m.steered_lowdose);
   $("steered").hidden = !any; document.querySelectorAll('nav a[href="#steered"]').forEach(a => a.hidden = !any);
-  steeredBlock(M.steered_lowdose, `steered-${model}-lowdose.json`, "lo");
-  steeredBlock(M.steered, `steered-${model}.json`, "hi");
+  steeredBlock(M.steered_lowdose, "lo");
+  steeredBlock(M.steered, "hi");
 }
-function steeredBlock(T, file, k) {
+// Every setting's replays at one decision (one file per decision).
+const replaysAt = (R, dk) => getJSON(`${R.folder}/${R.decisions.indexOf(dk)}.json`).then(d => d.results);
+function steeredBlock(T, k) {
   const panel = $(`sb-${k}`), table = $(`sb-${k}-table`), ctl = $(`sb-${k}-controls`), cmp = $(`sb-${k}-compare`), vs = $(`sb-${k}-against`);
   panel.hidden = !T; if (!T) return;
   const st = STB[k], base = T.summary.unsteered;
@@ -377,7 +379,7 @@ function steeredBlock(T, file, k) {
   const vsRandom = st.against === "random";
   vs.hidden = !hasRandom;
   vs.innerHTML = hasRandom ? `<span class="def">Δ against</span><span class="seg">${[["unsteered", "unsteered replays"], ["random", "random pushes, same layer and dose"]].map(([a, t]) => `<button data-a="${a}" aria-pressed="${a === st.against}">${t}</button>`).join("")}</span>` : "";
-  vs.querySelectorAll("button").forEach(b => b.onclick = () => { st.against = b.dataset.a; steeredBlock(T, file, k); });
+  vs.querySelectorAll("button").forEach(b => b.onclick = () => { st.against = b.dataset.a; steeredBlock(T, k); });
   const rate = c => (c && c.n ? c.right / c.n : null), harm = c => (c && c.n ? c.harmful / c.n : null);
   const delta = (d, goodUp, gap) => {
     if (!d) return "";
@@ -398,19 +400,19 @@ function steeredBlock(T, file, k) {
   }
   const tasks = T.decisions.length / 3;
   table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${tasks} matched triples) × ${T.samples} replays per push · dose ${T.doses.join(", ")} · Δ in percentage points ${vsRandom ? "against the random pushes at the same layer, dose and sign (their replays pooled per decision); pushes with no random direction at their layer have none" : "against the unsteered replays"}, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls, counted as not right · usable: first turn is a valid call or a real reply; rows below 80% are faded</p>`;
-  table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { st.setting = tr.dataset.setting; drawCompare(T, file, k); });
+  table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { st.setting = tr.dataset.setting; drawCompare(T, k); });
   st.setting = st.setting && T.settings.includes(st.setting) ? st.setting : T.settings[1];
   st.decision = st.decision && T.decisions.includes(st.decision) ? st.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];
   ctl.innerHTML = `<label class="def">decision<select data-r="dec">${T.decisions.map(d => `<option value="${esc(d)}" ${d === st.decision ? "selected" : ""}>${esc(d.replace("eval/", "").replace("@", " · turn "))}</option>`).join("")}</select></label><label class="def">push<select data-r="set">${T.settings.filter(n => n !== "unsteered").map(n => `<option ${n === st.setting ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
-  ctl.querySelector('[data-r="dec"]').onchange = e => { st.decision = e.target.value; drawCompare(T, file, k); };
-  ctl.querySelector('[data-r="set"]').onchange = e => { st.setting = e.target.value; drawCompare(T, file, k); };
-  drawCompare(T, file, k);
+  ctl.querySelector('[data-r="dec"]').onchange = e => { st.decision = e.target.value; drawCompare(T, k); };
+  ctl.querySelector('[data-r="set"]').onchange = e => { st.setting = e.target.value; drawCompare(T, k); };
+  drawCompare(T, k);
 }
-async function drawCompare(T, file, k) {
+async function drawCompare(T, k) {
   const st = STB[k], cmp = $(`sb-${k}-compare`); cmp.innerHTML = '<p class="loading">Loading transcripts…</p>';
-  const data = await getJSON(file);
+  const res = await replaysAt(T, st.decision);
   const sel = $(`sb-${k}-controls`).querySelector('[data-r="set"]'); if (sel) sel.value = st.setting;
-  const col = name => { const xs = ((data.results[name] || {})[st.decision] || []).slice().sort((a, b) => a.sample - b.sample);
+  const col = name => { const xs = (res[name] || []).slice().sort((a, b) => a.sample - b.sample);
     return `<div class="box"><h4>${esc(name)}</h4>${xs.map(x => replayCard(x)).join("") || '<p class="def">No replays.</p>'}</div>`; };
   cmp.innerHTML = col("unsteered") + col(st.setting);
 }
@@ -432,14 +434,14 @@ async function renderPair() {
   if (!T || !SM) { box.innerHTML = '<p class="def">No steered replays for this model.</p>'; return; }
   const dd = S.decision != null ? SM.raw.decisions[S.decision] : null, nn = S.neuron != null ? SM.raw.neurons[S.neuron] : null;
   const key = dd ? `${dd.id}@${dd.turn}` : null, name = nn ? `L${nn[0]}·${nn[1]}` : null;
-  const runs = [[T, `steered-${model}.json`, "dose 0.4"], [DATA.models[model].steered_lowdose, `steered-${model}-lowdose.json`, "low dose"]]
-    .filter(([R, , ]) => R && key && R.decisions.includes(key) && name && R.settings.some(x => x.startsWith(name + " ")));
+  const runs = [[T, "dose 0.4"], [DATA.models[model].steered_lowdose, "low dose"]]
+    .filter(([R]) => R && key && R.decisions.includes(key) && name && R.settings.some(x => x.startsWith(name + " ")));
   if (runs.length) {
     let html = "";
-    for (const [R, file, label] of runs) {
-      const data = await getJSON(file);
+    for (const [R, label] of runs) {
+      const res = await replaysAt(R, key);
       const settings = R.settings.filter(x => x.startsWith(name + " "));
-      html += `<div class="def">${label}</div>` + ["unsteered", ...settings].map(sname => { const xs = ((data.results[sname] || {})[key] || []).slice().sort((a, b) => a.sample - b.sample); return `<div class="box"><h4>${esc(sname)}</h4>${xs.map(replayCard).join("") || '<p class="def">No replays.</p>'}</div>`; }).join("");
+      html += `<div class="def">${label}</div>` + ["unsteered", ...settings].map(sname => { const xs = (res[sname] || []).slice().sort((a, b) => a.sample - b.sample); return `<div class="box"><h4>${esc(sname)}</h4>${xs.map(replayCard).join("") || '<p class="def">No replays.</p>'}</div>`; }).join("");
     }
     box.innerHTML = html;
     return;
