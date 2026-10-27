@@ -42,7 +42,8 @@ section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 button:focus-visible, select:focus-visible, input:focus-visible, canvas:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--good); outline-offset: 2px; }
 select, input { font: inherit; font-size: 12px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); padding: 5px 7px; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
-.controls label { display: inline-flex; gap: 6px; align-items: center; }
+.controls label { display: inline-flex; gap: 6px; align-items: center; max-width: 100%; min-width: 0; }
+.controls select { min-width: 0; max-width: 100%; text-overflow: ellipsis; }
 .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .tile { border: 1px solid var(--line); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .tile.center { border-color: var(--mix); }
