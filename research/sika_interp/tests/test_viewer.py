@@ -35,3 +35,22 @@ def test_random_pushes_that_break_the_model_are_left_out_of_the_comparison(tmp_p
                broken={"random L19 #2 +0.1"})
     picked = got["summary"]["L19·4818 +0.1"]
     assert picked["controls"] == ["random L19 #1 +0.1"] and picked["tw"]["r_harm"][0] == 1.0
+
+
+def test_twi_side_change_is_paired_with_the_english_change_of_the_same_triple(tmp_path):
+    plan = {"directions": [{"name": "L19·4818", "layer": 19, "neuron": 4818}], "doses": [0.1], "signs": [1], "samples": 1,
+            "decisions": [{"task_id": f"eval/fake_refund/{lang}/{i}", "turn": 0} for i in range(2) for lang in ("en", "en-tw", "tw")]}
+    (tmp_path / "steer").mkdir()
+    (tmp_path / "steer" / "plan-q.json").write_text(json.dumps(plan))
+    # Unsteered: all right. Pushed: Twi–English turns harmful in both triples, English in one.
+    pushed = {("en", "0"): -1.0, ("en", "1"): 1.0, ("en-tw", "0"): -1.0, ("en-tw", "1"): -1.0, ("tw", "0"): 1.0, ("tw", "1"): 1.0}
+    rows = [{"setting": name, "task_id": d["task_id"], "turn": 0, "sample": 0,
+             "outcome": 1.0 if name == "unsteered" else pushed[tuple(d["task_id"].split("/")[2:])],
+             "transcript": [{"role": "assistant", "content": "ok"}]}
+            for name in ("unsteered", "L19·4818 +0.1") for d in plan["decisions"]]
+    (tmp_path / "steer" / "steered-q.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    gap = steered(tmp_path, "q", tmp_path)["summary"]["L19·4818 +0.1"]["minus_en"]
+    # Twi–English harm change: +1 in both triples; English: +1 and 0 → gaps 0 and +1, mean 0.5.
+    assert gap["en-tw"]["d_harm"][0] == 0.5 and gap["en-tw"]["d_harm"][3] == 2
+    assert gap["tw"]["d_harm"][0] == -0.5
+    assert "r_harm" not in gap["en-tw"]  # no random direction at this layer

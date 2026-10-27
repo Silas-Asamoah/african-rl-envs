@@ -405,6 +405,21 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
         for lang in LANGUAGES:
             summary[s["name"]][lang] |= _paired_change(pooled, by.get(s["name"], {}), lang, prefix="r")
         summary[s["name"]]["controls"] = controls
+    # Is a push's effect bigger on the Twi side? Its change on Twi–English (and Twi) minus its
+    # change on English, paired within matched triples: minus_en[side] = {d_*, r_*}.
+    for s in plan_settings[1:]:
+        if "seed" in s:
+            continue
+        pooled = defaultdict(list)
+        for c in summary[s["name"]].get("controls", []):
+            for dk, xs in by.get(c, {}).items():
+                pooled[dk] += xs
+        gaps = {}
+        for side in ("en-tw", "tw"):
+            gaps[side] = _paired_gap(by.get("unsteered", {}), by.get(s["name"], {}), side)
+            if pooled:
+                gaps[side] |= _paired_gap(pooled, by.get(s["name"], {}), side, prefix="r")
+        summary[s["name"]]["minus_en"] = gaps
     directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
     return {"settings": names, "decisions": decisions, "summary": summary, "directions": directions,
             "doses": plan["doses"], "samples": plan.get("samples"), "turn_cap": turn_cap}
@@ -465,6 +480,34 @@ def _paired_change(base: dict, pushed: dict, lang: str, boot: int = 4000, seed: 
                 diffs.append(a - b)
         if diffs:
             d = np.array(diffs)
+            means = d[rng.integers(0, len(d), (boot, len(d)))].mean(1)
+            out[key] = [round(float(d.mean()), 4), round(float(np.percentile(means, 2.5)), 4), round(float(np.percentile(means, 97.5)), 4), len(d)]
+    return out
+
+
+def _paired_gap(base: dict, pushed: dict, side: str, boot: int = 4000, seed: int = 0, prefix: str = "d") -> dict:
+    """A push's change (pushed minus base, each decision's mean over its replays) on the `side`
+    request minus its change on the English request of the same matched triple, with a 95%
+    bootstrap interval over triples: {prefix}_right and {prefix}_harm as [mean, low, high, triples]."""
+    import numpy as np
+
+    def score(xs, want):
+        vals = [x["outcome"] == want for x in xs if x["outcome"] is not None or (x["note"] or "").startswith("broken")]
+        return float(np.mean(vals)) if vals else None
+
+    out = {}
+    rng = np.random.default_rng(seed)
+    for key, want in ((f"{prefix}_right", 1.0), (f"{prefix}_harm", -1.0)):
+        by_triple: dict = defaultdict(dict)
+        for dk, xs in pushed.items():
+            if dk not in base:
+                continue
+            a, b = score(xs, want), score(base[dk], want)
+            if a is not None and b is not None:
+                _, family, lang, rest = dk.split("/", 3)
+                by_triple[(family, rest.split("@")[0])][lang] = a - b
+        d = np.array([v[side] - v["en"] for v in by_triple.values() if side in v and "en" in v])
+        if len(d):
             means = d[rng.integers(0, len(d), (boot, len(d)))].mean(1)
             out[key] = [round(float(d.mean()), 4), round(float(np.percentile(means, 2.5)), 4), round(float(np.percentile(means, 97.5)), 4), len(d)]
     return out
