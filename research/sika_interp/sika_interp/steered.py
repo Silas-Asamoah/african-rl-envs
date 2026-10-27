@@ -50,6 +50,10 @@ async def run(args) -> None:
     plan = json.loads(Path(args.plan).read_text())
     sampling = tomllib.loads(Path(args.config).read_text())["sampling"]
     sampling["max_tokens"] = min(sampling.get("max_tokens", args.max_tokens), args.max_tokens)
+    # vLLM's extra sampling options (top_k, min_p, …) go in extra_body for the OpenAI client.
+    standard = {"temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "seed", "stop", "n"}
+    extra = {k: v for k, v in sampling.items() if k not in standard}
+    sampling = {k: v for k, v in sampling.items() if k in standard} | ({"extra_body": extra} if extra else {})
     wanted = {(d["task_id"], d["turn"]) for d in plan["decisions"]}
     ids = {t for t, _ in wanted}
     points = {}
