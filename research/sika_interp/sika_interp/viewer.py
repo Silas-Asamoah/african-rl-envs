@@ -34,6 +34,7 @@ SOURCES = {
     "steering": "steer/full-{key}.json",
     "steered": "steer/steered-{key}.jsonl",
     "plan": "steer/plan-{key}.json",
+    "sweep": "steer/sweep-{key}.json",
 }
 """Where the re-runs after the tag fix (2026-10-27) put their results, under --runs."""
 
@@ -385,6 +386,38 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
             "doses": plan["doses"], "samples": plan.get("samples"), "turn_cap": turn_cap}
 
 
+def sweep(runs: Path, key: str) -> dict | None:
+    """The whole-layer sweep: for every neuron of the swept layer, the share of decisions where
+    its push (each sign) beats 97% of the 32 random directions the steering run measured at
+    that layer, decision, sign and dose; by request language, in whole percent. Also which
+    neurons are on the map (picked by the scores)."""
+    import numpy as np
+
+    from sika_interp.packing import percentiles
+
+    sw = _read(runs / SOURCES["sweep"].format(key=key))
+    full = _read(runs / SOURCES["steering"].format(key=key))
+    if not sw or not full:
+        return None
+    layer, width = sw["layer"], sw["width"]
+    k = full["doses"].index(sw["dose"])
+    ctrl_idx = [j for j, d in enumerate(full["directions"]) if d[0] == "control" and d[1] == layer]
+    by_decision = {(r["task_id"], r["kind"]): r for r in full["decisions"] if "error" not in r}
+    beats: dict = {lang: [] for lang in LANGUAGES}
+    for r in sw["decisions"]:
+        f = by_decision.get((r["task_id"], r["kind"]))
+        if "error" in r or "right_shift" not in r or not f or "right_shift" not in f:
+            continue
+        shift = np.asarray(r["right_shift"], dtype=float)[:, :, 0]  # [width, 2]
+        ctrl = np.asarray(f["right_shift"], dtype=float)[ctrl_idx][:, :, k]  # [C, 2]
+        pct = percentiles(shift.T, ctrl.T).T  # [width, 2]
+        beats[r["language"]].append(pct >= 97)
+    picked = sorted(n for L, n, _ in (neuron_map(runs / SOURCES["maps"], key) or {"cards": []})["cards"] if L == layer)
+    share = {lang: (np.round(100 * np.mean(v, axis=0)).astype(int).T.tolist() if v else None) for lang, v in beats.items()}
+    return {"layer": layer, "width": width, "dose": sw["dose"], "decisions": {lang: len(v) for lang, v in beats.items()},
+            "share": share, "picked": picked}  # share[lang] = [down shares, up shares], each [width]
+
+
 def _clean(value):
     """NaN and infinities as null: JSON has no NaN, and the page reads null as missing."""
     if isinstance(value, float):
@@ -439,6 +472,7 @@ def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
         if cards:
             print(f"cards-{key}.json {_dump(out / f'cards-{key}.json', cards) / 1e6:.1f} MB")
         model["steered"] = steered(runs, key, out)
+        model["sweep"] = sweep(runs, key)
         full = runs / SOURCES["steering"].format(key=key)
         if full.exists():
             model["steering"] = pack_steering(full, (npz / meta["name"]) if npz else None, traces_of(runs, key), out, key)

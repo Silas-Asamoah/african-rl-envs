@@ -89,6 +89,12 @@
         <div class="tab-body" data-group="insp" data-tab="replays" hidden><div id="t-pair"><p class="def">Select a decision and neuron that were replayed.</p></div></div>
       </aside>
     </div>
+    <div class="panel" id="sweep-panel" hidden>
+      <h3 id="sweep-title">Whole-layer sweep</h3>
+      <p class="def">Every MLP neuron of one layer pushed at the first move of 10 tasks × 4 seeds × 3 languages (dose 0.4, both signs). Per neuron: share of decisions where its push beats 97% of the 32 random directions measured at that layer and decision (better sign). By chance about 3%. Lime: neurons on the map, picked by their scores.</p>
+      <div class="tabs" role="tablist" aria-label="Sweep language" data-group="sweep"></div>
+      <div id="sweep-body"></div>
+    </div>
   </section>
 
   <section id="steered">
