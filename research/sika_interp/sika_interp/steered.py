@@ -78,7 +78,7 @@ async def run(args) -> None:
             done.add((r["setting"], r["task_id"], r["turn"], r["sample"]))
     llm = AsyncOpenAI(base_url=args.base_url, api_key="EMPTY", timeout=1800)
     gate = asyncio.Semaphore(args.concurrency)
-    n = plan.get("samples", 4)
+    n = args.samples or plan.get("samples", 4)
     async with httpx.AsyncClient() as http:
         for s in settings(plan):
             todo = [(t, k, i) for (t, k) in sorted(points) for i in range(n) if (s["name"], t, k, i) not in done]
@@ -99,7 +99,8 @@ async def run(args) -> None:
                        "task_id": t, "turn": k, "sample": i, "original": original}
                 async with gate:
                     try:
-                        row["outcome"] = await rollout(llm, args.model, sampling, tools, point, expect, transcript)
+                        row["outcome"] = await rollout(llm, args.model, sampling, tools, point, expect, transcript, point.turns_used + args.turns)
+                        row["turn_cap"] = args.turns
                     except Exception as e:  # noqa: BLE001 - one failed replay shouldn't stop the setting
                         row["error"] = f"{type(e).__name__}: {e}"[:300]
                 row["transcript"] = transcript
@@ -125,6 +126,8 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-tokens", type=int, default=4096, help="cap per model turn")
     ap.add_argument("--concurrency", type=int, default=160)
+    ap.add_argument("--turns", type=int, default=30, help="model turns a replay may take from its decision")
+    ap.add_argument("--samples", type=int, default=0, help="replays per decision (default: the plan's)")
     asyncio.run(run(ap.parse_args()))
 
 

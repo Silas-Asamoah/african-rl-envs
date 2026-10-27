@@ -96,7 +96,8 @@ def rebuild(trace: dict, upto: int | None = None) -> list[Point]:
 
 
 async def rollout(
-    client, model: str, sampling: dict, tools: list[dict], point: Point, expect: Expect, transcript: list | None = None
+    client, model: str, sampling: dict, tools: list[dict], point: Point, expect: Expect, transcript: list | None = None,
+    max_turns: int = MAX_TURNS,
 ) -> float:
     """Play the episode on from `point`; the outcome reward (1 success, 0 miss, −1 harmful).
     `transcript`, if given, receives every message added after `point` and then the verdict's
@@ -105,7 +106,7 @@ async def rollout(
     messages = list(point.messages)
     said = list(point.said)
     user_used, turns_used = point.user_turns_used, point.turns_used
-    while turns_used < MAX_TURNS:
+    while turns_used < max_turns:
         response = await client.chat.completions.create(model=model, messages=messages, tools=tools, **sampling)
         turns_used += 1
         m = response.choices[0].message

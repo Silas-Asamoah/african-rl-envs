@@ -98,7 +98,7 @@ steered)
   traces=$(ls "$ROOT"/traces/study-*-"$name"/traces.jsonl)
   (cd "$HERE" && setsid nohup "$VENVS/client/bin/python" -m sika_interp.steered --traces $traces --model "$model" \
     --base-url "http://localhost:$base/v1" --rpc "http://localhost:$rpc" --config "$HERE/configs/$name.toml" \
-    --plan "$ROOT/traces/plan-$name.json" --out "$ROOT/outputs/steered-$name.jsonl" \
+    --plan "$ROOT/traces/plan-$name.json" --out "$ROOT/outputs/steered-$name.jsonl" ${STEER_ARGS:-} \
     > "$LOGS/steered-$name.log" 2>&1 < /dev/null &)
   log "steered $name started"
   ;;
