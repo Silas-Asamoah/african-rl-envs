@@ -434,22 +434,31 @@ function renderSweep(M) {
   tabs.querySelectorAll("button").forEach(b => b.onclick = () => { sweepLang = b.dataset.l; renderSweep(M); });
   const sh = W.share[sweepLang]; if (!sh) { $("sweep-body").innerHTML = '<p class="def">No decisions.</p>'; return; }
   const best = sh[0].map((d, i) => Math.max(d, sh[1][i])), picked = new Set(W.picked);
-  const bins = 25, maxShare = Math.max(...best, 10), bw = maxShare / bins;
-  const hAll = Array(bins).fill(0), hPick = Array(bins).fill(0);
-  best.forEach((v, i) => { const b = Math.min(bins - 1, Math.floor(v / bw)); hAll[b]++; if (picked.has(i)) hPick[b]++; });
-  const CW = 620, CH = 220, m = { l: 48, r: 12, t: 10, b: 34 }, top = Math.max(...hAll);
-  const x = b => m.l + (CW - m.l - m.r) * (b / bins), y = c => m.t + (CH - m.t - m.b) * (1 - Math.log10(1 + c) / Math.log10(1 + top));
-  let g = `<svg viewBox="0 0 ${CW} ${CH}" width="100%" role="img" aria-label="Distribution of neurons by share of decisions beating random">`;
-  [1, 10, 100, 1000, 10000].filter(c => c <= top).forEach(c => g += `<line x1="${m.l}" x2="${CW - m.r}" y1="${y(c)}" y2="${y(c)}" stroke="${COL.grid}"/><text x="${m.l - 6}" y="${y(c) + 4}" text-anchor="end">${c}</text>`);
-  hAll.forEach((c, b) => { if (c) g += `<rect x="${x(b) + 1}" y="${y(c)}" width="${x(b + 1) - x(b) - 2}" height="${y(0) - y(c)}" fill="#5a5a5a" rx="2"><title>${(b * bw).toFixed(0)}–${((b + 1) * bw).toFixed(0)}%: ${c} neurons, ${hPick[b]} on the map</title></rect>`; });
-  hPick.forEach((c, b) => { if (c) g += `<rect x="${x(b) + 1}" y="${y(c)}" width="${x(b + 1) - x(b) - 2}" height="${y(0) - y(c)}" fill="${COL.good}" rx="2" opacity="0.9"/>`; });
-  g += `<line x1="${x(3 / bw)}" x2="${x(3 / bw)}" y1="${m.t}" y2="${CH - m.b}" stroke="${COL.muted}" stroke-dasharray="3 3"/><text x="${x(3 / bw) + 4}" y="${m.t + 10}">chance</text>`;
-  for (let b = 0; b <= bins; b += 5) g += `<text x="${x(b)}" y="${CH - 12}" text-anchor="middle">${Math.round(b * bw)}%</text>`;
-  g += `<text x="${CW - m.r}" y="${CH}" text-anchor="end">share of decisions beating 97% of random →</text><text x="4" y="${m.t + 4}">neurons (log)</text></svg>`;
+  // Drawn at the container's pixel width so text keeps its size; labels sit outside the plot.
+  const host = $("sweep-body"), CW = Math.max(360, Math.min(760, (host.clientWidth || 900) * 0.6));
+  const bins = 25, bw = 100 / bins, m = { l: 56, r: 18, t: 34 }, plotH = 200, plotB = m.t + plotH;
+  const x = v => m.l + (CW - m.l - m.r) * (v / 100);
+  // Rug lanes: neurons on the map whose dots would overlap stack upward-down in small steps.
+  const lanes = [], placed = [];
+  W.picked.slice().sort((a, b) => best[a] - best[b]).forEach(i => { const px = x(best[i]); let lane = 0; while (placed.some(([q, l]) => l === lane && Math.abs(q - px) < 8)) lane++; placed.push([px, lane]); lanes.push([i, px, lane]); });
+  const rugRows = 1 + Math.max(0, ...lanes.map(r => r[2])), rugH = 8 + rugRows * 7, CH = plotB + rugH + 40;
+  const hAll = Array(bins).fill(0);
+  best.forEach(v => hAll[Math.min(bins - 1, Math.floor(v / bw))]++);
+  const top = Math.max(...hAll), y = c => m.t + plotH * (1 - Math.log10(1 + c) / Math.log10(1 + top));
+  let g = `<svg viewBox="0 0 ${CW} ${CH}" width="${CW}" height="${CH}" role="img" aria-label="Neurons of layer ${W.layer} by share of decisions where the push beats random">`;
+  g += `<text x="${m.l - 50}" y="14">neurons per bin (log)</text><text x="${x(3) + 5}" y="${m.t - 8}" fill="${COL.ink2}">chance ≈ 3%</text>`;
+  [1, 10, 100, 1000, 10000].filter(c => c <= top * 1.2).forEach(c => g += `<line x1="${m.l}" x2="${CW - m.r}" y1="${y(c)}" y2="${y(c)}" stroke="${COL.grid}"/><text x="${m.l - 8}" y="${y(c) + 4}" text-anchor="end">${c.toLocaleString()}</text>`);
+  hAll.forEach((c, k) => { if (c) g += `<rect x="${x(k * bw) + 1}" y="${y(c)}" width="${x(bw) - x(0) - 2}" height="${plotB - y(c)}" fill="#4d4d4d" rx="2"><title>${k * bw}–${(k + 1) * bw}%: ${c.toLocaleString()} neurons</title></rect>`; });
+  g += `<line x1="${x(3)}" x2="${x(3)}" y1="${m.t - 4}" y2="${plotB}" stroke="${COL.ink2}" stroke-dasharray="3 3" opacity="0.7"/>`;
+  g += `<line x1="${m.l}" x2="${CW - m.r}" y1="${plotB}" y2="${plotB}" stroke="${COL.muted}"/>`;
+  lanes.forEach(([i, px, lane]) => { g += `<circle cx="${px}" cy="${plotB + 9 + lane * 7}" r="3.2" fill="${COL.good}" stroke="#121212" stroke-width="1"><title>L${W.layer}·${i}: ${best[i]}% (up ${sh[1][i]}%, down ${sh[0][i]}%)</title></circle>`; });
+  for (let v = 0; v <= 100; v += 20) g += `<text x="${x(v)}" y="${plotB + rugH + 14}" text-anchor="${v === 0 ? "start" : v === 100 ? "end" : "middle"}">${v}%</text>`;
+  g += `<text x="${CW - m.r}" y="${CH - 4}" text-anchor="end">share of decisions where the push beats 97% of random →</text></svg>`;
+  g = `<div class="legend" style="margin-bottom:6px"><span><span class="sw" style="background:#4d4d4d"></span>all ${W.width.toLocaleString()} neurons</span><span><span class="sw" style="background:${COL.good};border-radius:50%"></span>the ${W.picked.length} on the map, one dot each</span></div>` + g;
   const med = a => { const s2 = a.slice().sort((p, q) => p - q); return s2.length ? s2[Math.floor(s2.length / 2)] : null; };
   const pickedVals = W.picked.map(i => best[i]), restVals = best.filter((_, i) => !picked.has(i));
   const order = best.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 15);
-  $("sweep-body").innerHTML = `<div class="sweep-wrap"><div>${g}</div><div><table class="grid"><tr><td class="def">median, all ${W.width.toLocaleString()}</td><td>${med(best)}%</td></tr><tr><td class="def">median, ${W.picked.length} on the map</td><td style="color:${COL.good}">${med(pickedVals)}%</td></tr><tr><td class="def">median, the rest</td><td>${med(restVals)}%</td></tr><tr><td class="def">above 20%: all / on the map</td><td>${best.filter(v => v > 20).length} / ${pickedVals.filter(v => v > 20).length}</td></tr></table>
+  $("sweep-body").innerHTML = `<div class="sweep-wrap"><div class="scroll">${g}</div><div><table class="grid"><tr><td class="def">median, all ${W.width.toLocaleString()}</td><td>${med(best)}%</td></tr><tr><td class="def">median, ${W.picked.length} on the map</td><td style="color:${COL.good}">${med(pickedVals)}%</td></tr><tr><td class="def">median, the rest</td><td>${med(restVals)}%</td></tr><tr><td class="def">above 20%: all / on the map</td><td>${best.filter(v => v > 20).length} / ${pickedVals.filter(v => v > 20).length}</td></tr></table>
   <div class="def" style="margin-top:10px">top neurons in the layer (${LANG[sweepLang]})</div><table class="grid">${order.map(([v, i]) => `<tr><td>${picked.has(i) ? `<button class="link" data-n="${i}" style="font:inherit;background:none;border:0;color:${COL.good};cursor:pointer;padding:0">L${W.layer}·${i}</button>` : `L${W.layer}·${i}`}</td><td style="text-align:right">${v}%</td><td class="def">up ${sh[1][i]}% · down ${sh[0][i]}%</td></tr>`).join("")}</table></div></div>`;
   $("sweep-body").querySelectorAll("button.link").forEach(b => b.onclick = () => openCard(W.layer, +b.dataset.n));
 }
@@ -721,7 +730,7 @@ function render() {
   drawMatrix().then(renderCircuit).catch(e => { $("s-legend").innerHTML = `<span class="def">Steering files not available (${esc(e.message)}).</span>`; });
 }
 document.querySelectorAll(".toggle button").forEach(b => b.addEventListener("click", () => { model = b.dataset.model; store.set("sika-model", model); render(); }));
-addEventListener("resize", () => { if (DATA) { drawMap(DATA.models[model].map); if (SM) { drawMatrix(); renderCircuit(); } } });
+addEventListener("resize", () => { if (DATA) { drawMap(DATA.models[model].map); renderSweep(DATA.models[model]); if (SM) { drawMatrix(); renderCircuit(); } } });
 // Shareable links: ?model=ministral&d=eval/promo_fee/en-tw/1000006@first_move&n=27:2472 (+ optional sign, dose, margin)
 const Q = new URLSearchParams(location.search);
 if (Q.get("model")) model = Q.get("model");
