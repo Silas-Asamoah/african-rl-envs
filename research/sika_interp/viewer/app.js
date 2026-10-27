@@ -372,10 +372,10 @@ async function renderSteered(M) {
     const c = T.summary[name], dirName = name.replace(/ [+−][0-9.]+$/, ""), info = T.directions[dirName] || {};
     h += `<tr data-setting="${esc(name)}" style="cursor:pointer"><td>${esc(name)}</td><td class="def">${esc(info.why === "control" ? "random control" : (REASON[info.picked_for] || "") + (info.why ? " · " + info.why : ""))}</td>${ORDER.map(l => {
       const r = rate(c[l]), hm = harm(c[l]);
-      return `<td style="text-align:right">${pct(r)} ${name === "unsteered" ? "" : dpp(r, rate(base[l]))}</td><td style="text-align:right">${pct(hm)} ${name === "unsteered" ? "" : `<span style="color:${hm - harm(base[l]) > 0 ? COL.harm : COL.good}">${hm == null ? "" : (hm - harm(base[l]) >= 0 ? "+" : "−") + Math.abs(Math.round(100 * (hm - harm(base[l]))))}</span>`}</td>`;
+      return `<td style="text-align:right" title="${c[l] ? `${c[l].right} right, ${c[l].harmful} harmful, ${c[l].broken} broken tool calls, ${c[l].unfinished} not finished, of ${c[l].n}` : ""}">${pct(r)} ${name === "unsteered" ? "" : dpp(r, rate(base[l]))}${c[l] && c[l].broken ? ` <span class="def">⚠${c[l].broken}</span>` : ""}</td><td style="text-align:right">${pct(hm)} ${name === "unsteered" ? "" : `<span style="color:${hm - harm(base[l]) > 0 ? COL.harm : COL.good}">${hm == null ? "" : (hm - harm(base[l]) >= 0 ? "+" : "−") + Math.abs(Math.round(100 * (hm - harm(base[l]))))}</span>`}</td>`;
     }).join("")}</tr>`;
   }
-  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${T.decisions.length / 3} tasks × 3 languages) × ${T.samples} replays per push · dose ${T.doses.join(", ")}</p>`;
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions (${T.decisions.length / 3} tasks × 3 languages) × 3–4 replays per push · dose ${T.doses.join(", ")} · a replay needing more than ${T.turn_cap} model turns counts as not finished · ⚠ broken tool calls (rejected by the server), counted as not right</p>`;
   table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { ST.setting = tr.dataset.setting; drawCompare(); });
   ST.setting = ST.setting && T.settings.includes(ST.setting) ? ST.setting : T.settings[1];
   ST.decision = ST.decision && T.decisions.includes(ST.decision) ? ST.decision : T.decisions.find(d => d.includes("/en-tw/")) || T.decisions[0];
@@ -401,7 +401,8 @@ function replayCard(x) {
     if (m.role === "user") return `<div style="margin:4px 0;color:${COL.ink2}">user: ${esc(m.content || "")}</div>`;
     return "";
   }).join("");
-  return `<details class="replay" style="border-top:1px solid ${COL.grid};padding:6px 0"><summary>replay ${x.sample + 1} ${badge}</summary>${body}${x.error ? `<div class="def">${esc(x.error)}</div>` : ""}</details>`;
+  const badge2 = x.note && x.note.startsWith("broken") ? `<span class="chip h">broken tool call</span>` : x.note ? `<span class="chip">${esc(x.note)}</span>` : badge;
+  return `<details class="replay" style="border-top:1px solid ${COL.grid};padding:6px 0"><summary>replay ${x.sample + 1} ${badge2}</summary>${body}${x.error ? `<div class="def">${esc(x.error)}</div>` : ""}</details>`;
 }
 
 async function renderPair() {
