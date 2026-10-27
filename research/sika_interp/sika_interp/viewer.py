@@ -1,10 +1,12 @@
-"""Gather the study's results into one compact JSON for the viewer page.
+"""Gather the study's results for the viewer page.
 
-    python -m sika_interp.viewer --runs <notes>/runs --out viewer-data.json [--page page.html]
+    python -m sika_interp.viewer --runs <notes>/runs --out <dir> [--npz <dir>]
 
-Reads the traces and the summaries the Modal jobs wrote (probes, cues, tokens, anchors, maps)
-from `--runs`, laid out as the study left them, and keeps only what the page draws. Missing
-pieces are left out, so the page can be built before every job has finished.
+Reads the traces and the summaries the Modal jobs wrote from `--runs`, laid out as the study
+left them, and writes into `--out`: data.json (everything the page draws inline), the page
+itself (page.html, data inlined) and the files it fetches on demand: steer-<model>.json (the
+neuron × decision steering matrix), steer-<model>-<family>.json (per-decision detail) and
+cards-<model>.json (neuron cards with their top-firing contexts). Missing pieces are left out.
 """
 
 import argparse
@@ -22,6 +24,20 @@ MODELS = {
     "ministral": {"id": "mistralai/Ministral-3-8B-Reasoning-2512", "name": "Ministral-3-8B-Reasoning-2512", "run": "study-ministral"},
 }
 STUDY_RUNS = ("study-matched", "study-extra-entw", "study-more-twins")
+SOURCES = {
+    "tokens": "read2/tokens-study-v2-{name}.json",
+    "cues": "read2/cues-{run}-{name}.json",
+    "contexts": "read2/contexts-{key}.json",
+    "maps": "maps2",
+    "suppress": "anchors2/suppress-{key}.json",
+    "receivers": "anchors2/receivers-{key}.json",
+    "steering": "steer/full-{key}.json",
+}
+"""Where the re-runs after the tag fix (2026-10-27) put their results, under --runs."""
+
+
+def traces_of(runs: Path, key: str) -> list[str]:
+    return [str(runs / f"{r}-{key}" / "traces.jsonl") for r in STUDY_RUNS if (runs / f"{r}-{key}" / "traces.jsonl").exists()]
 
 
 def _read(path: Path):
@@ -111,33 +127,139 @@ def words_alone(runs: Path) -> dict:
     return out
 
 
+def by_family(runs: Path, key: str) -> dict:
+    """Success and harm per task family and language over the matched twins."""
+    eps, _ = episodes(traces_of(runs, key))
+    out: dict = defaultdict(lambda: {lang: {"n": 0, "right": 0, "harmful": 0} for lang in LANGUAGES})
+    for e in eps:
+        cell = out[e.family][e.language]
+        cell["n"] += 1
+        cell["right"] += e.reward == 1.0
+        cell["harmful"] += e.reward == -1.0
+    return dict(sorted(out.items()))
+
+
+def placement_outcome(runs: Path, key: str, permutations: int = 4000, seed: int = 0) -> dict | None:
+    """Does where a Twi–English request sits between its twins predict the outcome? Per read
+    point and layer: the mean placement margin (nearer English twin > 0) of failed minus
+    successful Twi–English episodes, centred within task type, and a within-type
+    permutation p-value. Only types with both outcomes count."""
+    import numpy as np
+
+    link = _read(runs / "read" / f"link-{MODELS[key]['run']}-{MODELS[key]['name']}.json")
+    points = _read(runs / "read" / f"read-points-{MODELS[key]['run']}.json")
+    if not link or not points:
+        return None
+    reward = {(r["family"], r["language"], r["seed"]): r["reward"] for r in points}
+    rng = np.random.default_rng(seed)
+    out = {}
+    for point, block in link.items():
+        rows = [e for e in block["episodes"] if e["language"] == "en-tw" and (e["family"], "en-tw", e["seed"]) in reward]
+        width = max(len(e["margin"] or []) for e in rows)
+        rows = [e for e in rows if e["margin"] and len(e["margin"]) == width]  # both twins present
+        fam = np.array([e["family"] for e in rows])
+        fail = np.array([reward[(e["family"], "en-tw", e["seed"])] != 1.0 for e in rows])
+        keep = np.array([fail[fam == f].any() and (~fail[fam == f]).any() for f in fam])
+        fam, fail = fam[keep], fail[keep]
+        margin = np.array([[np.nan if v is None else v for v in e["margin"]] for e, k in zip(rows, keep) if k], dtype=float)
+        for f in set(fam):
+            margin[fam == f] -= np.nanmean(margin[fam == f], 0)
+        groups = [np.where(fam == f)[0] for f in sorted(set(fam))]
+
+        def diff(lab):
+            return np.nanmean(margin[lab], 0) - np.nanmean(margin[~lab], 0)
+
+        observed = diff(fail)
+        null = np.empty((permutations, margin.shape[1]))
+        for k in range(permutations):
+            lab = fail.copy()
+            for g in groups:
+                lab[g] = rng.permutation(lab[g])
+            null[k] = diff(lab)
+        p = (1 + (np.abs(null) >= np.abs(observed)).sum(0)) / (permutations + 1)
+        out[point] = {"diff": np.round(observed, 4).tolist(), "p": np.round(p, 5).tolist(),
+                      "episodes": int(len(fam)), "failed": int(fail.sum()), "types": len(groups)}
+    return out
+
+
 def anchors(runs: Path, key: str) -> list[dict]:
-    """Each replayed episode: its steps, the resampling importance of its model turns, and
-    the step-to-turn links."""
+    """Each replayed episode: its steps, the resampling importance of its model turns, the
+    step-to-turn links by deletion and by attention blocking, and the receiver heads' score
+    for every sentence of its last turn."""
     resampled = _read(runs / "anchors" / f"anchors-{key}.json")
     links = _read(runs / "anchors" / f"anchors-links-{MODELS[key]['name']}.json")
     if not resampled or not links:
         return []
+    blocked = {r["task_id"]: r for r in _read(runs / SOURCES["suppress"].format(key=key)) or []}
+    receivers = _read(runs / SOURCES["receivers"].format(key=key)) or {"items": []}
+    last = {it["task_id"]: it for it in receivers["items"] if it["kind"] == "last"}
     out = []
     for ep in links:
         turns_ = resampled["episodes"].get(ep["task_id"], [])
         means = [sum(t["rewards"]) / len(t["rewards"]) if t["rewards"] else None for t in turns_]
+        b = blocked.get(ep["task_id"], {})
+        r = last.get(ep["task_id"])
         out.append(
             {
                 "task_id": ep["task_id"],
                 "steps": ep["steps"],
                 "turn_step": ep["turn_step"],
                 "links": ep["links"],
+                "blocked": [x[:3] for x in b.get("links", [])],
+                "blocked_layers": b.get("layers_blocked"),
                 "outcome_from_turn": means,
                 "replays": resampled["n"],
+                "sentences": [
+                    {"text": s["text"], "message": s["message"], "role": s["role"], "part": s["part"], "score": s["score"]}
+                    for s in r["sentences"]
+                ] if r else None,
             }
         )
     return out
 
 
+def receivers(runs: Path, key: str, boot: int = 2000, seed: int = 0) -> dict | None:
+    """Receiver heads: each full-attention head's mean kurtosis, the top heads, and the mean
+    receiver score per sentence of the request, system prompt and reasoning by request
+    language, with twin-paired differences against English (bootstrap over twins)."""
+    import numpy as np
+
+    r = _read(runs / SOURCES["receivers"].format(key=key))
+    if not r:
+        return None
+    rng = np.random.default_rng(seed)
+    per: dict = defaultdict(dict)  # (family, seed) -> lang -> {source: mean}
+    for it in r["items"]:
+        if it["kind"] != "first":
+            continue
+        _, fam, lang, sd = it["task_id"].split("/")
+        sums: dict = defaultdict(list)
+        for s in it["sentences"]:
+            if s["score"] is None:
+                continue
+            src = "system" if s["role"] == "system" else "request" if s["role"] == "user" else "reasoning" if s["part"] == "reasoning" else "action"
+            sums[src].append(s["score"])
+        per[(fam, sd)][lang] = {k: float(np.mean(v)) for k, v in sums.items()}
+    sources = ("request", "system", "reasoning")
+    table: dict = {}
+    for src in sources:
+        table[src] = {}
+        for lang in LANGUAGES:
+            v = np.array([d[lang][src] for d in per.values() if lang in d and src in d[lang]])
+            table[src][lang] = {"mean": float(v.mean()) if len(v) else None, "n": int(len(v))}
+        for lang in ("en-tw", "tw"):
+            pairs = np.array([d[lang][src] - d["en"][src] for d in per.values() if lang in d and "en" in d and src in d[lang] and src in d["en"]])
+            if len(pairs):
+                means = np.array([rng.choice(pairs, len(pairs)).mean() for _ in range(boot)])
+                table[src][f"{lang}_minus_en"] = {"mean": float(pairs.mean()), "low": float(np.percentile(means, 2.5)),
+                                                  "high": float(np.percentile(means, 97.5)), "n": int(len(pairs))}
+    return {"layers": r["layers"], "kurtosis": r["kurtosis"], "heads": r["receivers"], "by_source": table,
+            "turns": len(r["items"])}
+
+
 def neuron_map(maps: Path, key: str, background: int = 24000, seed: int = 0) -> dict | None:
     """Every candidate neuron and a random background sample, with place and scores
-    quantised to int8 (scores ×20, places scaled per layer), plus cards and steering."""
+    quantised to int8 (scores ×20, places scaled per layer). Cards go to their own file."""
     import numpy as np
 
     base = maps / MODELS[key]["run"] / MODELS[key]["name"]
@@ -145,7 +267,6 @@ def neuron_map(maps: Path, key: str, background: int = 24000, seed: int = 0) -> 
         return None
     z = np.load(base / "map.npz")
     cards = _read(base / "cards.json") or []
-    steering = _read(base / "steering.json")
     places = z["places"].astype(np.float32)  # [layers, width, 2]
     layers, width, _ = places.shape
     score_names = [k for k in z.files if k not in ("places", "prefers")]
@@ -157,17 +278,31 @@ def neuron_map(maps: Path, key: str, background: int = 24000, seed: int = 0) -> 
     xy = np.clip(places[L, N] / scale[L, None] * 127, -127, 127).astype(int)
     scores = {k: np.clip(np.nan_to_num(z[k].astype(np.float32)[L, N]) * 20, -127, 127).astype(int).tolist() for k in score_names}
     return {
-        "layers": int(layers),
-        "width": int(width),
-        "layer": L.tolist(),
-        "neuron": N.tolist(),
-        "x": xy[:, 0].tolist(),
-        "y": xy[:, 1].tolist(),
-        "prefers": z["prefers"][L, N].astype(int).tolist(),
-        "scores": scores,
-        "cards": cards,
-        "steering": steering,
+        "layers": int(layers), "width": int(width), "layer": L.tolist(), "neuron": N.tolist(),
+        "x": xy[:, 0].tolist(), "y": xy[:, 1].tolist(), "prefers": z["prefers"][L, N].astype(int).tolist(),
+        "scores": scores, "cards": [[c["layer"], c["neuron"], c["reason"]] for c in cards],
     }
+
+
+def card_file(runs: Path, key: str) -> list[dict] | None:
+    """The neuron cards with their top-firing request contexts per language (token texts and
+    activations around the peak)."""
+    base = runs / SOURCES["maps"] / MODELS[key]["run"] / MODELS[key]["name"]
+    cards = _read(base / "cards.json")
+    if not cards:
+        return None
+    ctx = _read(runs / SOURCES["contexts"].format(key=key)) or {"neurons": {}, "episodes": {}}
+    for c in cards:
+        rows = ctx["neurons"].get(f"{c['layer']}:{c['neuron']}", {})
+        c["contexts"] = {
+            lang: [
+                {"task_id": ctx["episodes"][str(r["episode"])]["task_id"], "peak": r["peak"], "at": r["at"] - r["from"],
+                 "tokens": ctx["episodes"][str(r["episode"])]["pieces"][r["from"] : r["from"] + len(r["acts"])], "acts": r["acts"]}
+                for r in rs if str(r["episode"]) in ctx["episodes"]
+            ]
+            for lang, rs in rows.items()
+        }
+    return cards
 
 
 def _clean(value):
@@ -181,22 +316,35 @@ def _clean(value):
     return value
 
 
-def build(runs: Path) -> dict:
-    data: dict = {"models": {}}
-    data["words_alone"] = words_alone(runs)
+def _dump(path: Path, value) -> int:
+    # Partial-byte tokens decode to U+FFFD; keep them as JSON escapes, not raw characters.
+    text = json.dumps(_clean(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False).replace("�", "\\ufffd")
+    path.write_text(text)
+    return len(text.encode())
+
+
+def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
+    from sika_interp.packing import pack_steering
+
+    out.mkdir(parents=True, exist_ok=True)
+    data: dict = {"models": {}, "words_alone": words_alone(runs)}
     for key, meta in MODELS.items():
         read = runs / "read"
         model = {
             "name": meta["id"],
             "behaviour": behaviour(runs, key),
+            "by_family": by_family(runs, key),
             "reasoning_language": reasoning_language(runs, key),
             "probes": _read(read / f"probes-{meta['run']}-{meta['name']}.json"),
+            "placement_outcome": placement_outcome(runs, key),
             "cues": None,
-            "tokens": _read(read / f"tokens-{meta['run']}-{meta['name']}.json"),
+            "tokens": _read(runs / SOURCES["tokens"].format(name=meta["name"])),
             "anchors": anchors(runs, key),
-            "map": neuron_map(runs / "maps", key),
+            "receivers": receivers(runs, key),
+            "map": neuron_map(runs / SOURCES["maps"], key),
+            "steering": None,
         }
-        cues = _read(read / f"cues-{meta['run']}-{meta['name']}.json")
+        cues = _read(runs / SOURCES["cues"].format(run=meta["run"], name=meta["name"]))
         if cues:
             layers = len(cues[0]["scores"]["as_written"])
             model["cues"] = {
@@ -207,7 +355,14 @@ def build(runs: Path) -> dict:
                 | {"n": len(rows)}
                 for group, rows in (("threat", [r for r in cues if r["threat"]]), ("control", [r for r in cues if not r["threat"]]))
             }
+        cards = card_file(runs, key)
+        if cards:
+            print(f"cards-{key}.json {_dump(out / f'cards-{key}.json', cards) / 1e6:.1f} MB")
+        full = runs / SOURCES["steering"].format(key=key)
+        if full.exists():
+            model["steering"] = pack_steering(full, (npz / meta["name"]) if npz else None, traces_of(runs, key), out, key)
         data["models"][key] = model
+    print(f"data.json {_dump(out / 'data.json', data) / 1e6:.1f} MB")
     return data
 
 
@@ -215,18 +370,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--runs", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--page", type=Path, help="also write the viewer page with the data inlined")
+    ap.add_argument("--npz", type=Path, help="per-decision steering arrays downloaded from the volume (<dir>/<model name>/*.npz)")
     args = ap.parse_args()
-    data = build(args.runs)
-    text = json.dumps(_clean(data), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    args.out.write_text(text)
-    print(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.1f} MB)")
-    if args.page:
-        template = (Path(__file__).resolve().parent.parent / "viewer" / "template.html").read_text()
-        # Partial-byte tokens decode to U+FFFD; keep them as JSON escapes, not raw characters.
-        inline = text.replace("</", "<\\/").replace("\ufffd", "\\ufffd")
-        args.page.write_text(template.replace("/*DATA*/", inline))
-        print(f"wrote {args.page}")
+    build(args.runs, args.out, args.npz)
+    site = Path(__file__).resolve().parent.parent / "viewer"
+    for f in site.iterdir():
+        if f.is_file():
+            (args.out / f.name).write_bytes(f.read_bytes())
+    print(f"wrote {args.out}")
 
 
 if __name__ == "__main__":
