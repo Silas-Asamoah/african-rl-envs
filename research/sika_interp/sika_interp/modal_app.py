@@ -1971,6 +1971,57 @@ def receivers(
 
 
 @app.local_entrypoint()
+def sweep_layer(
+    traces: str,
+    model: str,
+    layer: int,
+    seeds: str = "1000000,1000001,1000002,1000003",
+    families: str = "fake_refund,promo_fee,pin_request,lender_impersonation,ambiguous_contact,insufficient_funds,sms_injection,data_exfiltration,send_money,unlock_arrears",
+    dose: float = 0.4,
+    containers: int = 8,
+    gpu: str = "H200",
+    out: str = "",
+):
+    """The steer lens for every MLP neuron of one layer (neuron-explorer's whole-layer sweep),
+    at the first move of these families and seeds in all three languages, one dose, both
+    signs. No random directions are drawn: the steering run already measured 32 per layer at
+    these decisions, and the percentiles are taken against those. Arrays go to the volume
+    under steer/sweep-L<layer>/<model>/; the shifts are saved locally."""
+    import time
+
+    from sika_interp.decisions import collect
+
+    started = time.time()
+    found = collect(traces.split(","), model, [int(s) for s in seeds.split(",")], families.split(","))
+    chosen = [d for d in found if d["kind"] == "first_move"]
+    width = sweep_width.remote(model, layer)
+    neurons = [[layer, i] for i in range(width)]
+    per = -(-len(chosen) // containers)
+    calls = [
+        Model.with_options(gpu=gpu)(model_id=model).steer_moves.spawn(f"sweep-L{layer}", chosen[i : i + per], neurons, 0, [dose])
+        for i in range(0, len(chosen), per)
+    ]
+    rows = [r for call in calls for r in call.get()]
+    for r in rows:
+        r.pop("directions", None)
+    result = {"model": model, "layer": layer, "width": width, "dose": dose, "signs": [-1, 1], "decisions": rows}
+    path = Path(out or f"sweep-L{layer}-{model.split('/')[-1]}.json")
+    path.write_text(json.dumps(result))
+    ok = [r for r in rows if "error" not in r]
+    print(f"{model} layer {layer}: {width} neurons × {len(rows)} decisions ({len(rows) - len(ok)} errors, "
+          f"{sum(bool(r.get('flagged')) for r in ok)} flagged) in {time.time() - started:.0f}s; saved {path}")
+
+
+@app.function(timeout=900, gpu=None, volumes={"/cache": cache})
+def sweep_width(model: str, layer: int) -> int:
+    """MLP width of `model` at `layer`, from its config (no GPU)."""
+    from transformers import AutoConfig
+
+    cfg = AutoConfig.from_pretrained(model, cache_dir="/cache/hf").get_text_config()
+    return int(cfg.intermediate_size)
+
+
+@app.local_entrypoint()
 def contexts(traces: str, run: str, model: str, batch: int = 300, out: str = ""):
     """Top-firing request contexts (`neuron_contexts`) for every neuron card on `model`'s map
     (map run `run`), over the first turn of every episode in `traces`; merged and saved."""
