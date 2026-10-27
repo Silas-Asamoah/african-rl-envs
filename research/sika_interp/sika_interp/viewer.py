@@ -370,7 +370,8 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
             {"sample": r["sample"], "outcome": outcome, "error": error, "note": note, "usable": usable,
              "transcript": [trim(m) for m in r.get("transcript", [])]}
         )
-    names = [s["name"] for s in __import__("sika_interp.steered", fromlist=["settings"]).settings(plan)]
+    plan_settings = __import__("sika_interp.steered", fromlist=["settings"]).settings(plan)
+    names = [s["name"] for s in plan_settings]
     decisions = [f"{d['task_id']}@{d['turn']}" for d in plan["decisions"]]
     _dump(out / f"steered-{key}.json", {"settings": names, "decisions": decisions, "results": by})
     summary = {}
@@ -389,6 +390,21 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
             for lang in LANGUAGES:
                 cells[lang] |= _paired_change(by.get("unsteered", {}), by.get(name, {}), lang)
         summary[name] = cells
+    # A picked push against the random directions at its layer, dose and sign, their replays
+    # pooled per decision: r_right / r_harm, paired by decision like d_right / d_harm. Only
+    # random pushes that leave the model working (usable ≥ 0.8, the page's cut) count.
+    for s in plan_settings[1:]:
+        controls = [c["name"] for c in plan_settings[1:] if "seed" in c and (c["layer"], c["dose"], c["sign"]) == (s["layer"], s["dose"], s["sign"])
+                    and summary[c["name"]]["usable"] >= 0.8]
+        if "seed" in s or not controls:
+            continue
+        pooled: dict = defaultdict(list)
+        for c in controls:
+            for dk, xs in by.get(c, {}).items():
+                pooled[dk] += xs
+        for lang in LANGUAGES:
+            summary[s["name"]][lang] |= _paired_change(pooled, by.get(s["name"], {}), lang, prefix="r")
+        summary[s["name"]]["controls"] = controls
     directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
     return {"settings": names, "decisions": decisions, "summary": summary, "directions": directions,
             "doses": plan["doses"], "samples": plan.get("samples"), "turn_cap": turn_cap}
@@ -426,10 +442,11 @@ def sweep(runs: Path, key: str) -> dict | None:
             "share": share, "picked": picked}  # share[lang] = [down shares, up shares], each [width]
 
 
-def _paired_change(base: dict, pushed: dict, lang: str, boot: int = 4000, seed: int = 0) -> dict:
-    """Change in the share of replays ending right and harmful, pushed minus unsteered, paired
-    by decision (each decision's mean over its replays), with a 95% bootstrap interval over
-    decisions. Broken tool calls count as not right."""
+def _paired_change(base: dict, pushed: dict, lang: str, boot: int = 4000, seed: int = 0, prefix: str = "d") -> dict:
+    """Change in the share of replays ending right and harmful, pushed minus base (unsteered,
+    or pooled random pushes), paired by decision (each decision's mean over its replays), with
+    a 95% bootstrap interval over decisions: {prefix}_right and {prefix}_harm as [mean, low,
+    high, decisions]. Broken tool calls count as not right."""
     import numpy as np
 
     def score(xs, want):
@@ -438,7 +455,7 @@ def _paired_change(base: dict, pushed: dict, lang: str, boot: int = 4000, seed: 
 
     out = {}
     rng = np.random.default_rng(seed)
-    for key, want in (("d_right", 1.0), ("d_harm", -1.0)):
+    for key, want in ((f"{prefix}_right", 1.0), (f"{prefix}_harm", -1.0)):
         diffs = []
         for dk, xs in pushed.items():
             if dk.split("/")[2] != lang or dk not in base:
