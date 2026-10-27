@@ -127,7 +127,9 @@ footer { max-width: 1640px; margin: 0 auto; color: var(--muted); font-size: 11.5
 .loading { color: var(--muted); }
 @media (max-width: 1180px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }
-  .inspector { position: static; max-height: none; }
+  /* One column: the inspector rides along the bottom of the screen while its workspace is in view. */
+  .inspector { top: auto; bottom: 0; max-height: 46vh; z-index: 20; box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.7);
+    padding-bottom: env(safe-area-inset-bottom, 0px); }
 }
 @media (max-width: 900px) {
   .tiles, .lanes, .dgrid, .mapwrap, .dash { grid-template-columns: minmax(0, 1fr); }
