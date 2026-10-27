@@ -438,7 +438,7 @@ function renderSweep(M) {
   best.forEach((v, i) => { const b = Math.min(bins - 1, Math.floor(v / bw)); hAll[b]++; if (picked.has(i)) hPick[b]++; });
   const CW = 620, CH = 220, m = { l: 48, r: 12, t: 10, b: 34 }, top = Math.max(...hAll);
   const x = b => m.l + (CW - m.l - m.r) * (b / bins), y = c => m.t + (CH - m.t - m.b) * (1 - Math.log10(1 + c) / Math.log10(1 + top));
-  let g = `<svg viewBox="0 0 ${CW} ${CH}" width="100%" style="max-width:${CW}px" role="img" aria-label="Distribution of neurons by share of decisions beating random">`;
+  let g = `<svg viewBox="0 0 ${CW} ${CH}" width="100%" role="img" aria-label="Distribution of neurons by share of decisions beating random">`;
   [1, 10, 100, 1000, 10000].filter(c => c <= top).forEach(c => g += `<line x1="${m.l}" x2="${CW - m.r}" y1="${y(c)}" y2="${y(c)}" stroke="${COL.grid}"/><text x="${m.l - 6}" y="${y(c) + 4}" text-anchor="end">${c}</text>`);
   hAll.forEach((c, b) => { if (c) g += `<rect x="${x(b) + 1}" y="${y(c)}" width="${x(b + 1) - x(b) - 2}" height="${y(0) - y(c)}" fill="#5a5a5a" rx="2"><title>${(b * bw).toFixed(0)}–${((b + 1) * bw).toFixed(0)}%: ${c} neurons, ${hPick[b]} on the map</title></rect>`; });
   hPick.forEach((c, b) => { if (c) g += `<rect x="${x(b) + 1}" y="${y(c)}" width="${x(b + 1) - x(b) - 2}" height="${y(0) - y(c)}" fill="${COL.good}" rx="2" opacity="0.9"/>`; });
@@ -448,7 +448,7 @@ function renderSweep(M) {
   const med = a => { const s2 = a.slice().sort((p, q) => p - q); return s2.length ? s2[Math.floor(s2.length / 2)] : null; };
   const pickedVals = W.picked.map(i => best[i]), restVals = best.filter((_, i) => !picked.has(i));
   const order = best.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 15);
-  $("sweep-body").innerHTML = `<div class="kurt-wrap"><div>${g}</div><div><table class="grid"><tr><td class="def">median, all ${W.width.toLocaleString()}</td><td>${med(best)}%</td></tr><tr><td class="def">median, ${W.picked.length} on the map</td><td style="color:${COL.good}">${med(pickedVals)}%</td></tr><tr><td class="def">median, the rest</td><td>${med(restVals)}%</td></tr><tr><td class="def">above 20%: all / on the map</td><td>${best.filter(v => v > 20).length} / ${pickedVals.filter(v => v > 20).length}</td></tr></table>
+  $("sweep-body").innerHTML = `<div class="sweep-wrap"><div>${g}</div><div><table class="grid"><tr><td class="def">median, all ${W.width.toLocaleString()}</td><td>${med(best)}%</td></tr><tr><td class="def">median, ${W.picked.length} on the map</td><td style="color:${COL.good}">${med(pickedVals)}%</td></tr><tr><td class="def">median, the rest</td><td>${med(restVals)}%</td></tr><tr><td class="def">above 20%: all / on the map</td><td>${best.filter(v => v > 20).length} / ${pickedVals.filter(v => v > 20).length}</td></tr></table>
   <div class="def" style="margin-top:10px">top neurons in the layer (${LANG[sweepLang]})</div><table class="grid">${order.map(([v, i]) => `<tr><td>${picked.has(i) ? `<button class="link" data-n="${i}" style="font:inherit;background:none;border:0;color:${COL.good};cursor:pointer;padding:0">L${W.layer}·${i}</button>` : `L${W.layer}·${i}`}</td><td style="text-align:right">${v}%</td><td class="def">up ${sh[1][i]}% · down ${sh[0][i]}%</td></tr>`).join("")}</table></div></div>`;
   $("sweep-body").querySelectorAll("button.link").forEach(b => b.onclick = () => openCard(W.layer, +b.dataset.n));
 }

@@ -138,3 +138,5 @@ footer { max-width: 1640px; margin: 0 auto; color: var(--muted); font-size: 11.5
 .harmchip { display: inline-block; margin-left: 4px; padding: 0 4px; background: var(--bg); color: var(--harm); border-radius: 2px; font-size: 11px; }
 .kurt-wrap { display: grid; grid-template-columns: minmax(0, auto) minmax(160px, 1fr); gap: 16px; align-items: start; }
 @container (max-width: 600px) { .kurt-wrap { grid-template-columns: minmax(0, 1fr); } }
+.sweep-wrap { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 900px) { .sweep-wrap { grid-template-columns: minmax(0, 1fr); } }
