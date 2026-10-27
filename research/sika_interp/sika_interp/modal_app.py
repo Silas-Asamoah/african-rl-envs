@@ -1064,11 +1064,13 @@ class Pushes:
         import torch
 
         total = torch.cuda.get_device_properties(0).total_memory
-        free = total - torch.cuda.memory_allocated() - 6e9
+        free = total - torch.cuda.memory_allocated() - 12e9
         if way.startswith("siblings"):
             return 384 if total > 60e9 else 128
         per = sum(t.numel() * t.element_size() for _, _, t in _tensors(self.head) if t.dim() > 0 and t.shape[0] == 1)
-        copies = 1 + 2 * max(self.K, 1) if self.flat_nodes else 4
+        # The node pass holds the tiled cache, its K-fold repeat and, while a layer appends, a
+        # second K-fold copy of that layer: budget 2 + 3K copies (and 4 without the node pass).
+        copies = 2 + 3 * max(self.K, 1) if self.flat_nodes else 4
         return max(1, min(256, int(free // (copies * max(per, 1)))))
 
     @property
@@ -1819,13 +1821,15 @@ def steer_all(
     out: str = "",
     diagnose: bool = False,
     gpu: str = "L40S",
+    retry: str = "",
 ):
     """`steer_moves` for every candidate neuron on `model`'s map (map run `run`), at the
     decisions of every task family in the episodes with these seeds (all three languages):
     every first move, plus the later decisions that have right and wrong moves. `limit`
     keeps that many decisions, spread over families and languages, for timing a slice;
-    `diagnose` only checks the batching ways against plain passes. Saves a JSON of every
-    decision's margins and shifts locally."""
+    `diagnose` only checks the batching ways against plain passes; `retry` (a previous output
+    JSON) reruns only its decisions that errored and merges them back into it. Saves a JSON of
+    every decision's margins and shifts locally."""
     import time
 
     from sika_interp.decisions import collect
@@ -1834,6 +1838,12 @@ def steer_all(
     picked = [list(n) for n in sorted({(c["layer"], c["neuron"]) for c in cards_of.remote(run, model)})]
     found = collect(traces.split(","), model, [int(s) for s in seeds.split(",")])
     chosen = [d for d in found if d["kind"] == "first_move" or d["rule"] is not None]
+    previous = None
+    if retry:
+        previous = json.loads(Path(retry).read_text())
+        failed = {(r["task_id"], r["kind"]) for r in previous["decisions"] if "error" in r}
+        chosen = [d for d in chosen if (d["task_id"], d["kind"]) in failed]
+        print(f"retrying {len(chosen)} decisions that errored")
     if limit:
         step = max(1, len(chosen) // limit)
         chosen = chosen[::step][:limit]
@@ -1847,6 +1857,9 @@ def steer_all(
     directions = next(r.pop("directions") for r in rows if "directions" in r)
     for r in rows:
         r.pop("directions", None)
+    if previous is not None:
+        redone = {(r["task_id"], r["kind"]): r for r in rows}
+        rows = [redone.get((r["task_id"], r["kind"]), r) for r in previous["decisions"]]
     result = {"model": model, "run": run, "doses": doses_, "signs": [-1, 1], "controls_per_layer": controls,
               "directions": directions, "decisions": rows}
     path = Path(out or f"steer-all-{run}-{model.split('/')[-1]}.json")
