@@ -153,10 +153,16 @@ hand-written seeds in `sika_agent/templates.py`.
 | `tasks_per_combo` | `10` | Tasks per (family, language); 600 tasks by default |
 | `families` | all 20 | Subset of the families above |
 | `languages` | `en`, `tw`, `en-tw` | |
+| `matched` | `false` | Same wallet for a seed in every language; only the wording changes |
 | `task.max_turns` | `30` | Model turns before the rollout is cut off |
 | `user_turns` (env) | `3` | Plain-text questions the scripted user answers |
 
 Tasks are interleaved, so the first 60 cover every family in every language once.
+
+With `matched` on, tasks that share a seed are exact twins across English, Twi and
+Twi–English (same owner, contacts, amounts, fees and expected outcome), so a language gap
+can be measured pair by pair. It is off by default, so published tasks and baselines don't
+change.
 
 ## Quickstart
 

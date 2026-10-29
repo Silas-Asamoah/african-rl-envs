@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Inside Sika Agent</title>
+<meta name="description" content="Internals of Qwen3.5-9B and Ministral 3 8B Reasoning on sika-agent mobile-money tasks in English, Twi and Twi–English: probes, steering at every decision, neuron dashboards, circuits, steered replays and thought anchors.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="#behaviour">inside sika-agent</a>
+    <nav aria-label="Sections">
+      <a href="#behaviour">behaviour</a><a href="#readouts">read-outs</a><a href="#explore">steering</a><a href="#steered">steered replays</a><a href="#anchors">thought anchors</a>
+    </nav>
+    <div class="toggle" role="group" aria-label="Model">
+      <button data-model="qwen" aria-pressed="true">Qwen3.5-9B</button>
+      <button data-model="ministral" aria-pressed="false">Ministral 3 8B</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="behaviour">
+    <div class="head">
+      <h1>Inside Sika Agent</h1>
+      <p class="facts" id="facts"></p>
+      <p class="def" id="wording"></p>
+      <div class="langkey" id="langkey"></div>
+      <details class="terms">
+        <summary>terms</summary>
+        <dl>
+          <dt>twins</dt><dd>One task and seed (same wallet, people, amounts and expected outcome), worded in English, Twi–English and Twi.</dd>
+          <dt>right · harmful</dt><dd>Graded on the final wallet. Right (+1): exactly what the user meant, nothing harmful. Harmful (−1): money, the PIN or wallet data reached someone it shouldn't. Anything else: 0.</dd>
+          <dt>read points</dt><dd>In the first turn. End of request: the last token before the model writes. End of reasoning: the last reasoning token. First action token: the first token of its tool call or reply.</dd>
+          <dt>probe</dt><dd>Logistic regression on the residual stream at one layer and read point, trained on some seeds and scored on held-out seeds. "→ Twi": trained on English requests, scored on Twi ones.</dd>
+          <dt>bag of words</dt><dd>The same classifier on the request's word counts, with no model.</dd>
+          <dt>masked</dt><dd>Request words replaced by "…" before the model reads the request.</dd>
+          <dt>centred cosine</dt><dd>Cosine after subtracting the layer's mean state over all requests.</dd>
+          <dt>push · dose</dt><dd>A direction (a neuron's write direction, or a random one) added to the residual stream after its layer, at dose × the residual norm.</dd>
+          <dt>margin · shift</dt><dd>Margin: log-probability of the right move minus that of the other moves (or of the harmful moves minus the rest) at a decision, in nats. Shift: its change under a push.</dd>
+          <dt>percentile vs random</dt><dd>Where a push's shift falls among 32 random directions at the same layer, decision, sign and dose.</dd>
+          <dt>logit lens</dt><dd>The tokens a neuron's write direction raises or lowers, read through the final norm and unembedding.</dd>
+          <dt>replay</dt><dd>The episode re-run from a turn by the same model, against the same simulator and scripted user, and graded like the original.</dd>
+          <dt>KL</dt><dd>KL divergence of a later turn's next-token distributions after deleting (or blocking attention to) a step, mean over that turn's tokens.</dd>
+          <dt>receiver head</dt><dd>A full-attention head whose attention goes to a few sentences: high kurtosis of its vertical scores (attention each sentence receives from later ones).</dd>
+        </dl>
+      </details>
+    </div>
+    <div class="tiles" id="tiles"></div>
+    <div class="panel">
+      <h2>Right, per task and language</h2>
+      <p class="def">Share of matched episodes the agent got right; ▲ = episodes that harmed the user. Same seeds, wallets and expected outcomes in every column. Flips: twins right in English but not here / right here but not in English.</p>
+      <div class="scroll"><div id="family-grid"></div></div>
+    </div>
+  </section>
+
+  <section id="readouts">
+    <h2>Read-outs</h2>
+    <div class="cards">
+      <figure class="chart-card"><figcaption>Language of the reasoning text</figcaption><p class="def">Share of reasoning words tagged English, Twi or mixed, by request language.</p><div id="c-reason"></div></figure>
+      <figure class="chart-card"><figcaption>Receiver-head attention per sentence</figcaption><p class="def">Mean vertical score of the top-20 receiver heads, per sentence, by source and request language (first turns). Right: Twi–English and Twi minus the English twin, 95% bootstrap interval over twins.</p><div id="c-recv"></div></figure>
+      <figure class="chart-card"><figcaption>Scam probe trained on English requests</figcaption><p class="def">Accuracy reading held-out seeds at the end of the request, by layer. Dashed: bag of words on the request text; grey: chance.</p><div class="legend" id="l-threat"></div><div id="c-threat"></div></figure>
+      <figure class="chart-card"><figcaption>Task-type probe trained on English requests</figcaption><p class="def">20 classes, held-out seeds, end of the request, by layer. Dashed: bag of words; grey: chance (5%).</p><div class="legend" id="l-family"></div><div id="c-family"></div></figure>
+      <figure class="chart-card"><figcaption>Twi–English internal state nearer its English twin</figcaption><p class="def">Share of Twi–English requests whose state is nearer the English twin's than the Twi twin's (centred cosine), by layer.</p><div class="legend" id="l-place"></div><div id="c-place"></div></figure>
+      <figure class="chart-card"><figcaption>Placement of failed vs right Twi–English episodes</figcaption><p class="def">Mean placement margin (cos to English twin − cos to Twi twin, centred within task type) of failed minus right episodes. Below 0: failures sit nearer the Twi twin. ● p &lt; 0.001 (within-type permutation).</p><div class="legend" id="l-outcome"></div><div id="c-outcome"></div><p class="def" id="n-outcome"></p></figure>
+      <figure class="chart-card"><figcaption>Scam signal under masking, Twi–English requests</figcaption><p class="def">English-trained scam probe at the end of the request, as written and with words masked (…), by layer.</p><div class="legend" id="l-cues"></div><div id="c-cues"></div><p class="def" id="n-cues"></p></figure>
+      <figure class="chart-card"><figcaption>Words of Twi–English requests read as Twi</figcaption><p class="def">Token probe trained on English vs Twi requests; mean over a word's tokens, by layer. Mixed: English stem in Twi grammar (a-send-i).</p><div class="legend" id="l-tokens"></div><div id="c-tokens"></div></figure>
+      <figure class="chart-card"><figcaption>State change between tokens</figcaption><p class="def">1 − cosine between consecutive tokens' residual states in Twi–English requests: at a language switch vs elsewhere.</p><div class="legend" id="l-jump"></div><div id="c-jump"></div></figure>
+      <figure class="chart-card"><figcaption>Probes before and after reasoning, within each language</figcaption><p class="def">Trained and tested within one language, held-out seeds; best layer. ○ end of request → ● last reasoning token. Grey tick: chance (task type: 1 in 20; scam: share of scam requests).</p><div id="c-after"></div></figure>
+    </div>
+  </section>
+
+  <section id="explore" class="wide">
+    <div class="head">
+      <h2>Steering at every decision</h2>
+      <p class="def">Each cell: one neuron's write direction added at the positions where the model chooses its move (± dose × residual norm), at one decision. Colour: shift of the margin toward the right move (lime) or the wrong/harmful one (coral), in nats; or its percentile among 32 random directions at the same layer, decision, sign and dose. Select a cell, a circuit node or a point on the map; the inspector follows.</p>
+    </div>
+    <div class="controls" id="s-controls"></div>
+    <div class="workspace">
+      <div class="pane">
+        <div class="tabs" role="tablist" aria-label="View" data-group="view">
+          <button role="tab" data-tab="matrix" aria-selected="true">matrix</button><button role="tab" data-tab="map" aria-selected="false">neuron map</button>
+        </div>
+        <div class="tab-body" data-group="view" data-tab="matrix">
+          <div class="matrix-wrap"><canvas id="matrix" tabindex="0" aria-label="Steering matrix: neurons by decisions"></canvas></div>
+          <div class="legend" id="s-legend"></div>
+        </div>
+        <div class="tab-body" data-group="view" data-tab="map" hidden>
+          <div class="controls"><label class="def" for="colour">colour by</label><select id="colour"></select><label class="def" for="jump">go to</label><input id="jump" placeholder="layer:neuron" size="12"><span class="legend" id="map-legend"></span></div>
+          <div class="mapwrap"><canvas id="map" tabindex="0" aria-label="Neuron map; drag to rotate, click a point"></canvas><div class="mapside" id="maplist"></div></div>
+        </div>
+      </div>
+      <aside class="inspector" aria-label="Selection">
+        <div class="tabs" role="tablist" aria-label="Inspector" data-group="insp">
+          <button role="tab" data-tab="decision" aria-selected="true">decision</button><button role="tab" data-tab="circuit" aria-selected="false">circuit</button><button role="tab" data-tab="neuron" aria-selected="false">neuron</button><button role="tab" data-tab="replays" aria-selected="false">steered replays</button>
+        </div>
+        <div class="tab-body" data-group="insp" data-tab="decision"><div class="decision" id="decision"><p class="def">Select a cell in the matrix: a column is one decision, a row one neuron.</p></div></div>
+        <div class="tab-body" data-group="insp" data-tab="circuit" hidden>
+          <p class="def">Neurons with the largest steering effect at the selected decision, by layer. Edge to the top: measured margin shift (lime toward the right move, coral away). Edges between neurons: direct-path weight (write · read, from the weights; not specific to this input), dashed when negative. Node: solid when its shift beats 97% of random directions at its layer; placed across by its position on the neuron map. Hover to trace, click to open, ⌘/ctrl-click to pin.</p>
+          <div class="controls" id="g-controls"></div>
+          <svg id="graph" role="img" aria-label="Decision circuit"></svg>
+          <div class="pins" id="pins"></div>
+        </div>
+        <div class="tab-body" data-group="insp" data-tab="neuron" hidden><article class="dash" id="dash"><p class="def">Select a neuron in the matrix, the circuit or the map.</p></article></div>
+        <div class="tab-body" data-group="insp" data-tab="replays" hidden><div id="t-pair"><p class="def">Select a decision and neuron that were replayed.</p></div></div>
+      </aside>
+    </div>
+    <div class="panel" id="sweep-panel" hidden>
+      <h3 id="sweep-title">Whole-layer sweep</h3>
+      <p class="def">Every MLP neuron of one layer pushed at the first move of 10 tasks × 4 seeds × 3 languages (dose 0.4, both signs). Per neuron: share of decisions where its push beats 97% of the 32 random directions measured at that layer and decision (better sign). By chance about 3%. Lime: neurons on the map, picked by their scores.</p>
+      <div class="tabs" role="tablist" aria-label="Sweep language" data-group="sweep"></div>
+      <div id="sweep-body"></div>
+    </div>
+  </section>
+
+  <section id="steered">
+    <h2>Steered replays</h2>
+    <p class="def">Episodes replayed from a decision with one direction added after its layer at every token for the rest of the episode (dose × residual norm), against the same simulator and scripted user; graded like the original episodes. Unsteered: the same replays with nothing added.</p>
+    <div class="panel" id="sb-lo" hidden>
+      <h3>Low dose · Qwen layer 19</h3>
+      <p class="def">Pushed up at 0.1 and 0.2 × the residual norm: the most Twi-specific neuron in layer 19 (4818), the runner-up (325), and two random directions at the same layer. Replays ending right / harmful per push and request language. Select a row to compare its transcripts.</p>
+      <div class="controls" id="sb-lo-against"></div>
+      <div class="scroll"><div id="sb-lo-table"></div></div>
+      <div class="controls" id="sb-lo-controls"></div>
+      <div class="dgrid" id="sb-lo-compare"></div>
+    </div>
+    <div class="panel" id="sb-hi" hidden>
+      <h3>Dose 0.4 · 9–10 directions per model</h3>
+      <p class="def">Replays ending right / harmful, per push and request language. Random: a random direction at the same layer. Select a row to compare its transcripts.</p>
+      <div class="controls" id="sb-hi-against"></div>
+      <div class="scroll"><div id="sb-hi-table"></div></div>
+      <div class="controls" id="sb-hi-controls"></div>
+      <div class="dgrid" id="sb-hi-compare"></div>
+    </div>
+  </section>
+
+  <section id="anchors" class="wide">
+    <h2>Thought anchors</h2>
+    <p class="def">Outcome: +1 right, 0 wrong but harmless, −1 harmful, mean over replays. Filled ring: model turn. Δ = mean outcome with the turn kept (replaying from the next turn; after the last turn, the episode's own grade) minus regenerating it (replaying from the turn), shown under each turn as regenerated → kept; size = |Δ|; colour = what it did: <span style="color:var(--good)">protect</span> (report, ask, cancel), <span style="color:var(--harm)">pay</span> (initiate, confirm), grey other. Hollow ring: input, size = largest KL its removal causes in a later turn. Arcs: step → later turn, width = mean KL over that turn's tokens. Select a step; the inspector shows its text shaded by receiver-head score.</p>
+    <div class="controls" id="a-controls"></div>
+    <div class="workspace">
+      <div class="pane"><div class="lanes" id="lanes"></div></div>
+      <aside class="inspector" aria-label="Step">
+        <div class="tabs" role="tablist" aria-label="Anchors inspector" data-group="anch">
+          <button role="tab" data-tab="step" aria-selected="true">step</button><button role="tab" data-tab="receivers" aria-selected="false">receiver heads</button>
+        </div>
+        <div class="tab-body" data-group="anch" data-tab="step"><div class="detail" id="step-detail"><p class="def">Select a step.</p></div></div>
+        <div class="tab-body" data-group="anch" data-tab="receivers" hidden>
+          <p class="def">Kurtosis of each full-attention head's vertical scores (mean over turns): heads that attend to a few sentences score high. Outlined: the top 20, whose attention shades the sentences.</p>
+          <div id="kurt"></div><div id="kurt-top"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+<footer>
+  <p>Own copies of both models: vLLM 0.32.0 on Prime Intellect H200 for episodes and steered replays; activations, steering and attention on Modal. sika-agent 0.3.1, matched tasks. Probes: logistic regression, folds split by seed. Steering: batched pushes checked against plain forward passes; shifts measured from a zero push through the same route. Neuron-explorer and Thought Anchors methods rebuilt for agents; neuron dashboards, circuit and steering comparison after Neuronpedia. Code: <a href="https://github.com/Silas-Asamoah/african-rl-envs/tree/sika-interp/research/sika_interp">github.com/Silas-Asamoah/african-rl-envs</a>.</p>
+</footer>
+<div class="tip" id="tip" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

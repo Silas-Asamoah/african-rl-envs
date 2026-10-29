@@ -88,6 +88,10 @@ class SikaTasksetConfig(vf.TasksetConfig):
     """Tasks per (family, language) pair."""
     families: list[str] = list(FAMILIES)
     languages: list[str] = list(templates.LANGUAGES)
+    matched: bool = False
+    """Build the same wallet for a seed in every language, changing only the wording, so
+    tasks with one seed are minimal pairs across languages. Off by default, so published
+    task sets and baselines are unchanged."""
     tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
     task: SikaTaskConfig = SikaTaskConfig()
 
@@ -111,7 +115,7 @@ class SikaTaskset(vf.Taskset[SikaTask, SikaTasksetConfig]):
             for family in cfg.families:
                 for language in cfg.languages:
                     seed = base + i
-                    scenario = generate(family, language, seed, cfg.split)
+                    scenario = generate(family, language, seed, cfg.split, matched=cfg.matched)
                     state = scenario.state
                     yield SikaTask(
                         SikaTaskData(

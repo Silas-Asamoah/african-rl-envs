@@ -1,0 +1,72 @@
+import json
+
+from sika_interp.viewer import steered, wording
+
+
+def _run(tmp_path, outcomes, broken=()):
+    """A tiny steered run: three Twi decisions, one replay each, one outcome per setting;
+    settings in `broken` leave the first turn empty."""
+    plan = {"directions": [{"name": "L19·4818", "layer": 19, "neuron": 4818}, {"name": "random L19 #1", "layer": 19, "seed": 1},
+                           {"name": "random L19 #2", "layer": 19, "seed": 2}, {"name": "L28·1", "layer": 28, "neuron": 1}],
+            "doses": [0.1], "signs": [1], "samples": 1,
+            "decisions": [{"task_id": f"eval/fake_refund/tw/{i}", "turn": 0} for i in range(3)]}
+    (tmp_path / "steer").mkdir()
+    (tmp_path / "steer" / "plan-q.json").write_text(json.dumps(plan))
+    rows = [{"setting": name, "task_id": d["task_id"], "turn": 0, "sample": 0, "outcome": o,
+             "transcript": [{"role": "assistant", "content": "" if name in broken else "ok"}]}
+            for name, o in outcomes.items() for d in plan["decisions"]]
+    (tmp_path / "steer" / "steered-q.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    return steered(tmp_path, "q", tmp_path)
+
+
+def test_picked_push_is_compared_with_pooled_random_pushes_at_its_layer_dose_and_sign(tmp_path):
+    got = _run(tmp_path, {"unsteered": 1.0, "L19·4818 +0.1": -1.0, "random L19 #1 +0.1": 1.0, "random L19 #2 +0.1": -1.0, "L28·1 +0.1": 1.0})
+    picked = got["summary"]["L19·4818 +0.1"]
+    assert picked["controls"] == ["random L19 #1 +0.1", "random L19 #2 +0.1"]
+    assert picked["tw"]["d_harm"][0] == 1.0 and picked["tw"]["d_harm"][3] == 3
+    assert picked["tw"]["r_harm"][0] == 0.5 and picked["tw"]["r_right"][0] == -0.5
+    # Random pushes and pushes with no random direction at their layer get no comparison.
+    assert "r_harm" not in got["summary"]["random L19 #1 +0.1"]["tw"]
+    assert "controls" not in got["summary"]["L28·1 +0.1"] and "r_harm" not in got["summary"]["L28·1 +0.1"]["tw"]
+
+
+def test_random_pushes_that_break_the_model_are_left_out_of_the_comparison(tmp_path):
+    got = _run(tmp_path, {"unsteered": 1.0, "L19·4818 +0.1": -1.0, "random L19 #1 +0.1": 1.0, "random L19 #2 +0.1": -1.0},
+               broken={"random L19 #2 +0.1"})
+    picked = got["summary"]["L19·4818 +0.1"]
+    assert picked["controls"] == ["random L19 #1 +0.1"] and picked["tw"]["r_harm"][0] == 1.0
+
+
+def test_twi_side_change_is_paired_with_the_english_change_of_the_same_triple(tmp_path):
+    plan = {"directions": [{"name": "L19·4818", "layer": 19, "neuron": 4818}], "doses": [0.1], "signs": [1], "samples": 1,
+            "decisions": [{"task_id": f"eval/fake_refund/{lang}/{i}", "turn": 0} for i in range(2) for lang in ("en", "en-tw", "tw")]}
+    (tmp_path / "steer").mkdir()
+    (tmp_path / "steer" / "plan-q.json").write_text(json.dumps(plan))
+    # Unsteered: all right. Pushed: Twi–English turns harmful in both triples, English in one.
+    pushed = {("en", "0"): -1.0, ("en", "1"): 1.0, ("en-tw", "0"): -1.0, ("en-tw", "1"): -1.0, ("tw", "0"): 1.0, ("tw", "1"): 1.0}
+    rows = [{"setting": name, "task_id": d["task_id"], "turn": 0, "sample": 0,
+             "outcome": 1.0 if name == "unsteered" else pushed[tuple(d["task_id"].split("/")[2:])],
+             "transcript": [{"role": "assistant", "content": "ok"}]}
+            for name in ("unsteered", "L19·4818 +0.1") for d in plan["decisions"]]
+    (tmp_path / "steer" / "steered-q.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    gap = steered(tmp_path, "q", tmp_path)["summary"]["L19·4818 +0.1"]["minus_en"]
+    # Twi–English harm change: +1 in both triples; English: +1 and 0 → gaps 0 and +1, mean 0.5.
+    assert gap["en-tw"]["d_harm"][0] == 0.5 and gap["en-tw"]["d_harm"][3] == 2
+    assert gap["tw"]["d_harm"][0] == -0.5
+    assert "r_harm" not in gap["en-tw"]  # no random direction at this layer
+
+
+def test_wording_counts_matched_twi_english_requests_with_no_twi_word(tmp_path):
+    def trace(lang, seed, prompt):
+        return {"task": {"data": {"family": "fake_refund", "seed": seed, "language": lang, "prompt": prompt}}}
+
+    rows = [trace("en", 0, "Send the money to my sister."), trace("tw", 0, "Mesrɛ wo, fa sika no kɔma me nuabea."),
+            trace("en-tw", 0, "Please send the sika kɔma my sister."),
+            trace("en", 1, "Send the money to my sister."), trace("tw", 1, "Mesrɛ wo, fa sika no kɔma me nuabea."),
+            trace("en-tw", 1, "Please send the money to my sister."),
+            trace("en-tw", 2, "Please send the money to my sister.")]  # no twins: left out
+    (tmp_path / "study-matched-q").mkdir()
+    (tmp_path / "study-matched-q" / "traces.jsonl").write_text(json.dumps({"traces": rows}))
+    got = wording(tmp_path, "q")
+    assert got["en_tw"] == 2 and got["en_tw_no_twi"] == 1
+    assert 0 < got["reviewed"] <= got["phrasings"]

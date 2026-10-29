@@ -1,0 +1,20 @@
+# vf-eval config for Ministral 3 8B Reasoning, reached through the reasoning adapter
+# (sika_interp.serving) that remote/pod.sh puts in front of vLLM. Sampling is Mistral's
+# recommended setting.
+model = "mistralai/Ministral-3-8B-Reasoning-2512"
+
+[client]
+base_url = "http://localhost:8002/v1"
+api_key_var = "LOCAL_KEY"
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_tokens = 16384
+
+[env.taskset]
+matched = true
+
+# The harness is a plain tool-calling loop, so it runs on the pod rather than in a sandbox.
+[env.agent.runtime]
+type = "subprocess"
