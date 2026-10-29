@@ -585,7 +585,9 @@ const MAPC = Object.fromEntries(Object.entries(REASON).map(([k, v]) => [k, [v, [
 async function loadCards() { try { return await getJSON(`cards-${model}.json`); } catch (e) { return null; } }
 function mapColour(key, v) {
   const t = Math.max(-1, Math.min(1, v / 60));
-  if (MAPC[key] && MAPC[key][1] === "div") return t >= 0 ? mix(COL.tw, 0.25 + 0.75 * t) : mix(COL.en, 0.25 + 0.75 * -t);
+  // Positive scores lean Twi, except "English word inside Twi–English", which is English minus Twi.
+  const [up, down] = key === "english_word_in_mix" ? [COL.en, COL.tw] : [COL.tw, COL.en];
+  if (MAPC[key] && MAPC[key][1] === "div") return t >= 0 ? mix(up, 0.25 + 0.75 * t) : mix(down, 0.25 + 0.75 * -t);
   return key.startsWith("scam") ? mix(COL.harm, 0.15 + 0.85 * Math.abs(t)) : mix(COL["en-tw"], 0.15 + 0.85 * Math.abs(t));
 }
 function renderMap(M) {
