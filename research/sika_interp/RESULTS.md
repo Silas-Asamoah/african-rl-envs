@@ -239,7 +239,9 @@ every replay are in the viewer.
 - 10 of the 600 Twi–English requests have no Twi or mixed word: one promo-fee wording ("I've
   won Sika Wallet promo. Send … processing fee …", 8 requests) and one errands wording (2) in
   sika-agent 0.3.1's Twi–English eval pool are entirely English. They are kept as the
-  environment produced them; a later release should replace those wordings.
+  environment produced them. sika-agent 0.3.2 replaces those wordings (40 of the 1,800
+  matched requests and the scripted reply in 30 ambiguous-contact episodes change), so
+  rebuilding the study's tasks needs the environment as of commit 612dc3e.
 - Neuron-explorer's and Thought Anchors' methods were rebuilt for agents; no code was copied.
   Attention blocking covers every head of the full-attention layers: all 34 for Ministral,
   8 of 32 for Qwen (its linear-attention layers still carry the blocked step). Receiver-head
