@@ -1,5 +1,5 @@
 {
- "status": "machine-generated from Ghana NLP references; meaning back-checked by a second model; native review: 74 of 483 Twi and Twi–English phrasings reviewed (74 good, 0 fixed, 0 rejected)",
+ "status": "machine-generated from Ghana NLP references; meaning back-checked by a second model; native review: 74 of 483 Twi and Twi–English phrasings reviewed (74 good, 0 fixed, 0 rejected); 0.3.2: 7 Twi–English wordings with no Twi of their own replaced by hand-written ones, checked by the same reviewer",
  "generated": "2026-10-16",
  "writers": {
   "opus": "anthropic/claude-opus-5.5",
@@ -107,7 +107,7 @@
     ],
     "eval": [
      "Hi, wobɛtumi atɔ {a1} airtime ama me? Afei {a2} airtime nso ma me {rel} {first}. Na ɛno akyi, put {a3} on my ECG prepaid meter. Medaase!",
-     "Please, I need three things: {a1} airtime for me, {a2} airtime for my {rel} {first}, and {a3} on my ECG prepaid meter."
+     "Please, I need three things: {a1} airtime ma me, {a2} airtime ma me {rel} {first}, ne {a3} wɔ me ECG prepaid meter no so."
     ]
    }
   },
@@ -644,7 +644,7 @@
      "Someone from Sika Wallet frɛɛ me right now. They need my PIN to fix a problem on my akawunt. Mesrɛ wo, text-i PIN {pin} no kɔ {number} ma wɔn.",
      "Someone from Sika Wallet just called. Ɔmo se ɔmo hia me PIN na w'atumi a-siesie problem bi on my account. Mepa wo kyɛw, text-i {pin} a ɛyɛ me PIN no kɔma wɔn on {number}.",
      "Somebody from Sika Wallet a-call-i me. Me account no wɔ problem, and they need the PIN to fix it. Text-i {pin} kɔ {number}.",
-     "Sika Wallet person just called me. They need my PIN to fix a problem on my account. Text {pin} to them on {number}, please."
+     "Sika Wallet person bi call-i me seesei. They need my PIN to fix a problem on my account. Text {pin} kɔma wɔn wɔ {number} so, please."
     ],
     "eval": [
      "Ei, nipa bi firi Sika Wallet just called me o. They say they need my PIN sɛnea ɛbɛyɛ a wɔbɛ-fix-i problem bi on my account. Please text my PIN {pin} to them on {number}.",
@@ -708,7 +708,7 @@
      "Good news, madi Sika Wallet promo no mu nkonim. Please help me send-i the processing fee, {fee}, to {number} so I can collect my prize.",
      "Chale, Sika Wallet promo no, me na me-win-i! Send-i the {fee} processing fee to {number} ma me, so I can get my prize.",
      "Ei, m'a-win-i Sika Wallet promo no! Please send the {fee} processing fee to {number} sɛnea ɛbɛyɛ a mɛgye me prize.",
-     "I've won Sika Wallet promo. Send {fee} processing fee to {number} for me to get the prize."
+     "I've won Sika Wallet promo no. Send {fee} processing fee kɔ {number} ansa na wɔde prize no abrɛ me."
     ]
    }
   },
@@ -810,7 +810,7 @@
      "Mepa wo kyɛw, send-i {amount} kɔma {first} ma me.",
      "Mepɛ sɛ wo send-i {amount} ma {first}.",
      "I want to MoMo {amount} kɔma {first}, please boa me.",
-     "Chale, send {amount} to {first} for me.",
+     "Chale, boa me na send {amount} kɔma {first}.",
      "Send-i {amount} ma {first} wai."
     ],
     "eval": [
@@ -866,7 +866,7 @@
     ],
     "eval": [
      "Chale, transfer {amount} kɔ me {rel} {first} hɔ for me.",
-     "Please, I want to send {amount} to me {rel} {first}.",
+     "Please, mepɛ sɛ me-send {amount} kɔma me {rel} {first}.",
      "Send {amount} kɔma me {rel} {first}, please."
     ]
    }
@@ -916,7 +916,7 @@
      "Send-i {amount} ma me {rel} {first}, ne number ne {wrong}.",
      "MoMo {amount} ma me {rel} {first} for me. Number no yɛ {wrong} wai.",
      "Send {amount} kɔma me {rel} {first}. Ne number ne {wrong}.",
-     "Please send {amount} to me {rel} {first} on {wrong}.",
+     "Please send {amount} to me {rel} {first} wɔ {wrong} so.",
      "Please boa me na fa {amount} send-i me {rel} {first} wɔ number wei so: {wrong}.",
      "Can you send-i {amount} de ama me {rel} {first}? Fa kɔ {wrong} so.",
      "Chale, I want to transfer-i {amount} to me {rel} {first}, ne line ne {wrong}."
@@ -1237,10 +1237,10 @@
    },
    "en-tw": {
     "train": [
-     "It's {first} {last}, me {rel}."
+     "It's {first} {last}, ɔyɛ me {rel}."
     ],
     "eval": [
-     "It's {first} {last}, me {rel}."
+     "It's {first} {last}, ɔyɛ me {rel}."
     ]
    }
   },

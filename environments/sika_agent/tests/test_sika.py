@@ -241,6 +241,33 @@ def test_every_wording_fills_in_cleanly(family, split):
             assert not any("{" in t or "}" in t for t in texts), (family, language, seed)
 
 
+# Twi words that are written without ɛ or ɔ, none of them an English word.
+TWI_WORDS = set(
+    "fa ma na kɔ kɔma nso anaa wai hɔ yi wei saa ara bi ne mesrɛ medaase boa tua tɔ hwɛ "
+    "kenkan seesei afei akyi ntɛm kane mma".split()
+)
+
+
+def twi_in(text: str) -> list[str]:
+    """The Twi in a wording, ignoring its {placeholders}: words with ɛ or ɔ, English verbs
+    in Twi form ("send-i", "me-win-i") and common Twi words."""
+    text = re.sub(r"\{[^}]*\}", " ", text)
+    found = re.findall(r"[\w'’-]*[ɛɔƐƆ][\w'’-]*", text)
+    found += re.findall(r"\b\w+-i\b|\b(?:me|a|wo|ɔ|m'a|w'a)-\w+", text)
+    return found + [w for w in re.findall(r"[A-Za-zɛɔ'’]+", text) if w.lower() in TWI_WORDS]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_every_twi_english_wording_has_twi_of_its_own(kind):
+    """Names and slot fills ("papa", "Auntie") can't be the only Twi in a Twi–English task."""
+    for name in KINDS[kind]:
+        for split in templates.SPLITS:
+            for text in templates.options(kind, name, "en-tw", split):
+                assert twi_in(text), (kind, name, split, text)
+            for text in templates.options(kind, name, "en", split):
+                assert not twi_in(text), (kind, name, split, text)
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 def test_no_two_people_share_a_day_name_spelling(family):
     from sika_agent.scenarios import same_name

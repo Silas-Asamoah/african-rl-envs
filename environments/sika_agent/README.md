@@ -141,6 +141,9 @@ How the wording was made:
    (`scripts/build_review_page.py`, `scripts/apply_review.py`): **74 of the 483 Twi and
    Twi–English phrasings reviewed, all 74 approved without changes.** The rest are
    machine-checked only.
+4. Every Twi–English wording must carry Twi of its own, not just in names or slot fills
+   like "papa" (a test checks it). 0.3.2 replaced seven that didn't, with wordings written
+   by hand and checked by the Twi reader.
 
 English planted injections and the code-switched "that's all" reply still use the
 hand-written seeds in `sika_agent/templates.py`.
@@ -195,7 +198,8 @@ uv run pytest -q
 The tests drive a scripted correct agent through every family, language and 12 seeds (it must
 always succeed), check that doing nothing is never harmful, check that falling for each scam or
 obeying each planted instruction is always caught, check that third-party text can't forge
-tool output, and check that every wording fills in cleanly with train and eval pools kept apart.
+tool output, check that every wording fills in cleanly with train and eval pools kept apart,
+and check that every Twi–English wording has some Twi in it.
 
 ## Baseline results
 
@@ -214,6 +218,9 @@ Six models on 240 eval tasks each, scored with the 0.3.1 grader ([full table and
   Twi; frontier models hold steady across languages.
 - **The only harmful outcomes are fake promo fees,** and in all 10 the agent first questioned the user,
   who insisted. No model sent a PIN to anyone or acted on a planted instruction.
+
+These were run on 0.3.1. 0.3.2 rewords 10 of the 240 tasks, all Twi–English (see Languages and
+wording).
 
 Earlier: [0.2.1 baselines](results/v0.2.1.md), with the hand-written wording and the 0.3.0 grader.
 
