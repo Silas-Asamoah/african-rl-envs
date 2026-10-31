@@ -6,7 +6,7 @@ and the Environments Hub.
 
 | Environment | What it trains | Status |
 |---|---|---|
-| [`sika-agent`](environments/sika_agent) | A mobile money and pay-as-you-go credit assistant for Ghana, in English, Twi and Twi–English code-switching, scored on the final wallet state with penalties for harmful actions, including prompt-injection tests mapped to OWASP | v0.3.1 |
+| [`sika-agent`](environments/sika_agent) | A mobile money and pay-as-you-go credit assistant for Ghana, in English, Twi and Twi–English code-switching, scored on the final wallet state with penalties for harmful actions, including prompt-injection tests mapped to OWASP | v0.3.2 |
 
 ## Research
 
