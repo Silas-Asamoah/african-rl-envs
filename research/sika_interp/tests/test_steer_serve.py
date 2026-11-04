@@ -219,3 +219,16 @@ def test_patch_probe_records_the_first_mismatch():
     assert probe["candidate_passes"] == 1 and probe["matched_passes"] == 0
     assert probe["mismatch"] == {"task_id": "t", "batch_tokens": [11, 12, 49, 41, 42], "batch_positions": [4, 5, 6, 7, 8], "signature": SIG}
     assert w.patch_state()["hits"] == 0
+
+
+def test_find_patches_takes_the_template_as_far_as_it_goes():
+    vectors = torch.arange(2 * 2 * 8, dtype=torch.float32).view(2, 2, 8)
+    later_turn = [1, 2, 3, 4, 11, 12, 13, 41, 30, 31]  # the second template token replaced by a model turn
+    found = find_patches(*flattened(later_turn), [spec(vectors)])
+    idx, vec = found[1]
+    assert idx.tolist() == [7]
+    assert torch.equal(vec, vectors[0][:1])
+    no_template = [1, 2, 3, 4, 11, 12, 13, 30, 31]  # the request without any template token
+    assert find_patches(*flattened(no_template), [spec(vectors)]) == {}
+    other_request = [1, 2, 3, 4, 11, 12, 14, 41, 42]  # a request token differs
+    assert find_patches(*flattened(other_request), [spec(vectors)]) == {}

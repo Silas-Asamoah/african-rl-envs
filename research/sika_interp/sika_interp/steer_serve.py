@@ -35,9 +35,13 @@ from pathlib import Path
 
 
 def find_patches(input_ids, positions, specs: list[dict]) -> dict[int, tuple]:
-    """Where each spec's signature appears whole in a flattened batch (`input_ids` and each
-    token's position in its own sequence): per layer, the flat indices of the template tokens
-    (the last `k` of the signature) and the vectors to set there, as (indices, [n, width])."""
+    """Where each spec's signature appears in a flattened batch (`input_ids` and each token's
+    position in its own sequence): per layer, the flat indices of the template tokens and the
+    vectors to set there, as (indices, [n, width]). The request part of the signature (all
+    but its last `k` tokens) must appear whole at its positions; the template tokens are
+    taken as far as they go, at least one, since a chat template can drop the end of the
+    generation prompt from earlier turns (Qwen's drops `<think>` once a later user message
+    arrives), and a shorter template is still the template."""
     import torch
 
     found: dict[int, tuple[list, list]] = {}
@@ -45,19 +49,29 @@ def find_patches(input_ids, positions, specs: list[dict]) -> dict[int, tuple]:
     for spec in specs:
         sig, first, k = spec["signature"], int(spec["first"]), int(spec["k"])
         n = int(sig.shape[0])
+        m = n - k
         sig = sig.to(input_ids.device, input_ids.dtype)
         for c in (positions == first).nonzero().flatten().tolist():
-            if c + n > n_tokens:
+            if c + m + 1 > n_tokens:
                 continue
-            if not torch.equal(input_ids[c : c + n], sig):
+            if not torch.equal(input_ids[c : c + m], sig[:m]):
                 continue
-            if not torch.equal(positions[c : c + n], torch.arange(first, first + n, device=positions.device, dtype=positions.dtype)):
+            if not torch.equal(positions[c : c + m], torch.arange(first, first + m, device=positions.device, dtype=positions.dtype)):
                 continue
-            idx = torch.arange(c + n - k, c + n, device=input_ids.device)
+            j = 0
+            while (
+                j < k and c + m + j < n_tokens
+                and int(input_ids[c + m + j]) == int(sig[m + j])
+                and int(positions[c + m + j]) == first + m + j
+            ):
+                j += 1
+            if j == 0:
+                continue
+            idx = torch.arange(c + m, c + m + j, device=input_ids.device)
             for layer, vec in zip(spec["layers"], spec["vectors"]):
                 idxs, vecs = found.setdefault(int(layer), ([], []))
                 idxs.append(idx)
-                vecs.append(vec)
+                vecs.append(vec[:j])
     return {layer: (torch.cat(idxs), torch.cat(vecs)) for layer, (idxs, vecs) in found.items()}
 
 
