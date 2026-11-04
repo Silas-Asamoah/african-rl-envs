@@ -1,7 +1,8 @@
 "use strict";
 /* Inside Sika Agent: results only. data.json holds everything drawn up front; the steering
    matrix (steer-<model>.json), per-decision detail (steer-<model>-<family>.json) and neuron
-   cards (cards-<model>.json) load when first needed. */
+   cards (cards-<model>.json) load when first needed, as do the steered and patched replays'
+   transcripts (one file per decision). */
 
 const $ = id => document.getElementById(id);
 const LANG = { en: "English", tw: "Twi", "en-tw": "Twi–English" };
@@ -476,6 +477,94 @@ async function renderPair() {
   box.querySelectorAll("[data-d]").forEach(b => b.onclick = () => { const [id, turn] = b.dataset.d.split("@"); const j = SM.raw.decisions.findIndex(x => x.id === id && String(x.turn) === turn); if (j >= 0) { S.decision = j; selectionChanged(); } });
 }
 
+// ---------- request-end patching ----------
+// One block per arm (Twi–English, Twi, English decisions); each keeps its own selection.
+const PTB = {};
+const PSRC = { own: "own state", en: "English twin", half: "halfway to the English twin", random: "random, same distance", en_other: "another seed's English request", tw: "Twi twin", "en-tw": "Twi–English twin" };
+const PCOL = { own: COL.ink2, en: COL.en, half: "#8fb8ef", random: COL.muted, en_other: "#1d55a3", tw: COL.tw, "en-tw": COL.mix, contrast: COL.good };
+const ARMS = ["primary", "twi", "reverse"];
+function renderPatched(M) {
+  const any = Object.values(DATA.models).some(m => m.patched);
+  $("patched").hidden = !any; document.querySelectorAll('nav a[href="#patched"]').forEach(a => a.hidden = !any);
+  const box = $("pt-arms"); box.innerHTML = "";
+  if (!M.patched) { box.innerHTML = '<p class="def">No patching results for this model.</p>'; return; }
+  for (const arm of ARMS) {
+    const A = M.patched[arm]; if (!A) continue;
+    const st = PTB[arm] = PTB[arm] || { decision: null, setting: null, against: "unpatched", margin: "right" };
+    const swap = (A.screen || A.replays).swap, lang = A.language;
+    const panel = document.createElement("div"); panel.className = "panel"; panel.id = `pt-${arm}`;
+    const twin = arm === "twi" ? "the Twi–English twin" : "the Twi twin";
+    panel.innerHTML = `<h3><span style="color:${COL[lang]}">${LANG[lang]}</span> decisions · ${esc(PSRC[swap])}'s state in place of their own${arm === "twi" ? " · tw: " + twin : ""}</h3>
+      <div class="pt-screen" hidden><div class="controls pt-margin"></div><div class="legend pt-legend"></div><div class="pt-chart"></div><p class="def pt-screen-note"></p><div class="scroll"><div class="pt-all"></div></div></div>
+      <div class="pt-replays" hidden><div class="controls pt-against"></div><div class="scroll"><div class="pt-table"></div></div><div class="controls pt-controls"></div><div class="dgrid pt-compare"></div></div>`;
+    box.appendChild(panel);
+    patchScreen(A, st, panel);
+    patchTable(A, st, panel);
+  }
+}
+const ciText = c => (c ? `${fx(c[0], 3)} (${fx(c[1], 2)} to ${fx(c[2], 2)})` : "–");
+function patchScreen(A, st, panel) {
+  const wrap = panel.querySelector(".pt-screen"), sc = A.screen; wrap.hidden = !sc; if (!sc) return;
+  const margins = ["right", "harm"].filter(m => sc[m]);
+  if (!margins.includes(st.margin)) st.margin = margins[0];
+  const mg = panel.querySelector(".pt-margin");
+  mg.innerHTML = margins.length > 1 ? `<span class="def">margin</span><span class="seg">${margins.map(m => `<button data-m="${m}" aria-pressed="${m === st.margin}">${m === "right" ? "right move" : "harmful move"}</button>`).join("")}</span>` : "";
+  mg.querySelectorAll("button").forEach(b => b.onclick = () => { st.margin = b.dataset.m; patchScreen(A, st, panel); });
+  const R = sc[st.margin], series = [];
+  for (const src of sc.sources) {
+    const v = R.sources[src]; if (!v) continue;
+    series.push({ name: src, color: PCOL[src] || COL.ink, values: v.layers.map(c => (c ? c[0] : null)), dash: src === "en_other" || src === "half",
+      extra: i => (v.layers[i] ? `(${fx(v.layers[i][1], 2)} to ${fx(v.layers[i][2], 2)})` : "") });
+  }
+  const C = R.contrast;
+  if (C) series.push({ name: `contrast: ${sc.swap} − controls`, color: PCOL.contrast, values: C.layers.map(c => (c ? c[0] : null)),
+    marks: C.layers.map(c => c && (c[1] > 0 || c[2] < 0)), extra: i => (C.layers[i] ? `(${fx(C.layers[i][1], 2)} to ${fx(C.layers[i][2], 2)})${C.layers[i][1] > 0 || C.layers[i][2] < 0 ? " ★" : ""}` : "") });
+  const vals = series.flatMap(s => s.values).filter(v => v != null);
+  const lo = Math.min(0, Math.floor(Math.min(...vals) * 10) / 10 - 0.05), hi = Math.max(0, Math.ceil(Math.max(...vals) * 10) / 10 + 0.05);
+  legend(panel.querySelector(".pt-legend"), series.map(s => ({ name: s.name, color: s.color, dash: s.dash })));
+  lines(panel.querySelector(".pt-chart"), series, { y: [lo, hi], yfmt: v => fx(v, 2), zero: true, xs: sc.layers, xlabel: "layer patched", label: `Change in the ${st.margin} margin by layer patched` });
+  panel.querySelector(".pt-screen-note").textContent = `Change in the log-odds of the ${st.margin === "right" ? "right" : "harmful"} move (nats) after patching one layer, mean over ${R.n} decisions; hover for the 95% interval. ● contrast whose interval excludes 0. k = ${sc.k} template tokens.`;
+  const all = panel.querySelector(".pt-all");
+  all.innerHTML = `<table class="grid"><thead><tr><th>all layers at once</th>${sc.sources.map(s => `<th style="color:${PCOL[s] || COL.ink}">${esc(s)}</th>`).join("")}${C ? `<th style="color:${PCOL.contrast}">contrast</th>` : ""}</tr></thead><tbody><tr><td class="def">mean (95% interval)</td>${sc.sources.map(s => `<td>${ciText((R.sources[s] || {}).all)}</td>`).join("")}${C ? `<td>${ciText(C.all)}</td>` : ""}</tr></tbody></table>`;
+}
+function patchTable(A, st, panel) {
+  const wrap = panel.querySelector(".pt-replays"), T = A.replays; wrap.hidden = !T; if (!T) return;
+  const table = panel.querySelector(".pt-table"), ctl = panel.querySelector(".pt-controls"), vs = panel.querySelector(".pt-against");
+  const hasControls = T.settings.some(n => T.summary[n].controls);
+  if (!hasControls) st.against = "unpatched";
+  const vsC = st.against === "controls", cnames = (T.summary[T.settings.find(n => T.summary[n].controls)] || {}).controls || [];
+  vs.innerHTML = hasControls ? `<span class="def">Δ against</span><span class="seg">${[["unpatched", "unpatched replays"], ["controls", `${cnames.join(" and ")}, pooled`]].map(([a, t]) => `<button data-a="${a}" aria-pressed="${a === st.against}">${esc(t)}</button>`).join("")}</span>` : "";
+  vs.querySelectorAll("button").forEach(b => b.onclick = () => { st.against = b.dataset.a; patchTable(A, st, panel); });
+  const delta = (d, goodUp) => {
+    if (!d) return "";
+    const [m, lo, hi, n] = d, sig = lo > 0 || hi < 0, good = goodUp ? m >= 0 : m <= 0;
+    return `<span style="color:${good ? COL.good : COL.harm};${sig ? "font-weight:700" : "opacity:0.8"}" title="${(100 * m).toFixed(1)} points, 95% interval ${(100 * lo).toFixed(1)} to ${(100 * hi).toFixed(1)} over ${n} decisions">${Math.round(100 * m) > 0 ? "+" : Math.round(100 * m) < 0 ? "−" : ""}${Math.abs(Math.round(100 * m))}${sig ? "★" : ""}</span>`;
+  };
+  let h = `<table class="grid"><thead><tr><th>setting</th><th>source</th><th>layer</th><th>right</th><th>Δ</th><th>harmful</th><th>Δ</th></tr></thead><tbody>`;
+  for (const name of T.settings) {
+    const c = T.summary[name], dR = vsC ? c.r_right : c.d_right, dH = vsC ? c.r_harm : c.d_harm;
+    const detail = `${c.right} right, ${c.harmful} harmful, ${c.unfinished} not finished, ${c.errors} errors, of ${c.n}`;
+    h += `<tr data-setting="${esc(name)}" style="cursor:pointer"><td>${esc(name)}</td><td class="def">${esc(c.source ? PSRC[c.source] || c.source : "none")}</td><td>${c.layers ? c.layers.join(", ") : "–"}</td><td style="text-align:right" title="${detail}">${pct(c.n ? c.right / c.n : null)}</td><td>${delta(dR, true)}</td><td style="text-align:right" title="${detail}">${pct(c.n ? c.harmful / c.n : null)}</td><td>${delta(dH, false)}</td></tr>`;
+  }
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions × ${T.samples} replays per setting · Δ in percentage points ${vsC ? `against ${cnames.join(" and ")} (their replays pooled per decision)` : "against the unpatched replays"}, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns from its decision counts as not finished · select a row to compare its transcripts with the unpatched ones</p>`;
+  table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { st.setting = tr.dataset.setting; drawPatchCompare(T, st, panel); });
+  const pick = T.settings.find(n => T.summary[n].source === T.swap && (T.summary[n].layers || [])[0] === T.best) || T.settings[1];
+  st.setting = st.setting && T.settings.includes(st.setting) ? st.setting : pick;
+  st.decision = st.decision && T.decisions.includes(st.decision) ? st.decision : T.decisions[0];
+  ctl.innerHTML = `<label class="def">decision<select data-r="dec">${T.decisions.map(d => `<option value="${esc(d)}" ${d === st.decision ? "selected" : ""}>${esc(d.replace("eval/", "").replace("@", " · turn "))}</option>`).join("")}</select></label><label class="def">setting<select data-r="set">${T.settings.filter(n => n !== "unpatched").map(n => `<option ${n === st.setting ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
+  ctl.querySelector('[data-r="dec"]').onchange = e => { st.decision = e.target.value; drawPatchCompare(T, st, panel); };
+  ctl.querySelector('[data-r="set"]').onchange = e => { st.setting = e.target.value; drawPatchCompare(T, st, panel); };
+  drawPatchCompare(T, st, panel);
+}
+async function drawPatchCompare(T, st, panel) {
+  const cmp = panel.querySelector(".pt-compare"); cmp.innerHTML = '<p class="loading">Loading transcripts…</p>';
+  const res = await replaysAt(T, st.decision);
+  const sel = panel.querySelector('.pt-controls [data-r="set"]'); if (sel) sel.value = st.setting;
+  const col = name => { const xs = (res[name] || []).slice().sort((a, b) => a.sample - b.sample);
+    return `<div class="box"><h4>${esc(name)}</h4>${xs.map(x => replayCard(x)).join("") || '<p class="def">No replays.</p>'}</div>`; };
+  cmp.innerHTML = col("unpatched") + col(st.setting);
+}
+
 // ---------- whole-layer sweep ----------
 let sweepLang = "en-tw";
 function renderSweep(M) {
@@ -786,7 +875,7 @@ function render() {
   const M = DATA.models[model];
   document.querySelectorAll(".toggle button").forEach(b => b.setAttribute("aria-pressed", b.dataset.model === model));
   S.decision = null; S.neuron = null; S.pins = []; SM = null;
-  renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M); renderSteered(M); renderSweep(M);
+  renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M); renderSteered(M); renderPatched(M); renderSweep(M);
   $("dash").innerHTML = '<p class="def">Select a neuron on the map, in the steering matrix or in the circuit.</p>';
   $("decision").innerHTML = '<p class="def">Select a cell in the matrix: a column is one decision, a row one neuron.</p>';
   drawMatrix().then(renderCircuit).catch(e => { $("s-legend").innerHTML = `<span class="def">Steering files not available (${esc(e.message)}).</span>`; });
