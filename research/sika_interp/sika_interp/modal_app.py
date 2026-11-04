@@ -588,6 +588,115 @@ class Model:
         cache.commit()
         return [dict(r, directions=meta) if i == 0 else r for i, r in enumerate(out)]
 
+    def request_end(self, messages: list[dict], tools: list[dict]) -> tuple[list[int], int]:
+        """A prompt's token ids and the position just after the user's request in them."""
+        from sika_interp.patching import request
+
+        ids = self.render(messages, tools)[0].tolist()
+        span = self.user_span(ids, request(messages))
+        if span is None:
+            raise ValueError("request not found in the rendered prompt")
+        return ids, span[0] + len(span[1])
+
+    def states_at(self, ids: list[int], positions: list[int]):
+        """The residual stream after every layer at `positions` of the prompt `ids`
+        ([layers, positions, width], float32 on the GPU)."""
+        import torch
+
+        captured: dict[int, torch.Tensor] = {}
+
+        def keep(i):
+            def hook(module, args, output):
+                hidden = output[0] if isinstance(output, tuple) else output
+                captured[i] = hidden[0, positions].float()
+
+            return hook
+
+        handles = [layer.register_forward_hook(keep(i)) for i, layer in enumerate(self.layers)]
+        try:
+            with torch.no_grad():
+                self.model(input_ids=torch.tensor([ids], device="cuda"), logits_to_keep=1)
+        finally:
+            for h in handles:
+                h.remove()
+        return torch.stack([captured[i] for i in range(len(self.layers))])
+
+    @modal.method()
+    def patch_moves(self, run: str, items: list[dict], sources: list[str], cap: int = 32, max_tail: int = 1200, seed: int = 0) -> list[dict]:
+        """Activation patching at decisions (`items` from `patching.arms`): for each, the
+        template tokens after the request are set to each source's state after each layer and
+        after all layers (`patching.conditions` over `sources`), the decision's own reasoning
+        runs to its action, and the shift of each margin from an unpatched pass of the same
+        route is kept ([conditions]). The template tokens are those the decision's prompt
+        shares, right after the request, with the first-turn prompt and with every source's;
+        a decision with none, or whose tail is over `max_tail` tokens, is skipped with a reason.
+        Full arrays go to the volume under patch/<run>/<model>/; the first row carries the
+        condition grid as `rows`."""
+        import time
+
+        import numpy as np
+        import torch
+
+        from sika_interp.patching import conditions, shared_prefix, template_span
+
+        rows = conditions(len(self.layers), list(sources))
+        folder = Path("/cache/patch") / run / self.model_id.split("/")[-1]
+        folder.mkdir(parents=True, exist_ok=True)
+
+        def ok(check: dict) -> bool:
+            return "likely" in check and check["likely"] < 0.25
+
+        way, out = None, []
+        for item in items:
+            d = item["decision"]
+            started = time.time()
+            row = {k: d[k] for k in ("task_id", "family", "category", "language", "seed", "kind", "index", "reward", "took", "rule")}
+            row["arm"] = item["arm"]
+            try:
+                prompt, end = self.request_end(d["messages"], d["tools"])
+                rendered = {name: self.request_end(msgs, d["tools"]) for name, msgs in item["sources"].items()}
+                k = template_span(prompt, *rendered["own"])
+                for ids, e in rendered.values():
+                    k = min(k, shared_prefix(prompt[end : end + k], ids[e : e + k]))
+                row |= {"k": k, "start": end, "prompt_tokens": len(prompt)}
+                if k == 0:
+                    row["error"] = "no template tokens shared with every source"
+                    continue
+                states = {name: self.states_at(ids, list(range(e, e + k))) for name, (ids, e) in rendered.items()}
+                row["sources"] = {name: {"tokens": len(ids), "end": e} for name, (ids, e) in rendered.items()}
+                at = Patches(self, d, end, k, states, item["swap"], seed=seed + d["seed"], cap=cap)
+                row |= {"tail_tokens": at.S, "template": self.tok.decode(at.tail[:k])}
+                if at.S > max_tail:
+                    row["error"] = f"tail of {at.S} tokens is over the cap of {max_tail}"
+                    continue
+                with at.hooked(), torch.no_grad():
+                    checks = {}
+                    if way is None:
+                        for candidate in Patches.WAYS:
+                            checks[candidate] = at.check(candidate)
+                            if ok(checks[candidate]):
+                                way = candidate
+                                break
+                        if way is None:
+                            way = next(w for w in Patches.WAYS if "likely" in checks[w])
+                    else:
+                        checks[way] = at.check(way)
+                    checks["noop"] = at.noop(way)
+                    effects, zero = at.run(way, rows)
+                    effects, zero = effects.numpy(), zero.numpy()
+                row |= at.summary(effects, zero)
+                name = f"{d['task_id'].replace('/', '_')}_{item['arm']}.npz"
+                np.savez_compressed(folder / name, base=at.base, zero=zero, effects=effects.astype(np.float16), labels=np.array(at.labels))
+                row |= {"saved": name, "way": way, "checks": checks, "batch": at.batch(way)}
+            except Exception as e:  # noqa: BLE001 - keep the rest of the batch; the row says what failed
+                row["error"] = f"{type(e).__name__}: {e}"[:500]
+                torch.cuda.empty_cache()
+            finally:
+                row["seconds"] = round(time.time() - started, 1)
+                out.append(row)
+        cache.commit()
+        return [dict(r, rows=rows) if i == 0 else r for i, r in enumerate(out)]
+
     @modal.method()
     def neuron_contexts(self, episodes: list[dict], neurons: list[list[int]], top: int = 8, window: int = 14) -> dict:
         """Where each listed MLP neuron fires most in the user's requests: per neuron and request
@@ -976,7 +1085,9 @@ class Pushes:
         self.trie = trie
         cut, open_at = trie["cut"], trie["open_at"]
         prefix = ap["renders"][sorted(ap["renders"])[0]][:cut]
-        self.L = open_at - 1 if open_at is not None else cut - 1
+        self.L = self.split(cut, open_at)
+        # Where the call-or-reply opening sits in the tail (None when it isn't before `cut`).
+        self.open_idx = open_at - 1 - self.L if open_at is not None else None
         self.tail, self.prompt_tokens = prefix[self.L :], cut
         self.S, self.K = len(self.tail), len(trie["nodes"])
         self.nodes = trie["nodes"]
@@ -997,9 +1108,14 @@ class Pushes:
                 owner.model(input_ids=torch.tensor([prefix + list(n)], device="cuda"), logits_to_keep=1).logits[0]
                 for n in self.nodes
             ]
-            self.truth = self.move_logp(logits[:1], logits[-1:], at_nodes)[0]
+            o = self.open_idx or 0
+            self.truth = self.move_logp(logits[o : o + 1], logits[-1:], at_nodes)[0]
             self.head = owner.model(input_ids=torch.tensor([prefix[: self.L]], device="cuda"), use_cache=True).past_key_values
         self.base = self.truth.cpu().numpy()
+
+    def split(self, cut: int, open_at: int | None) -> int:
+        """Where the shared cache ends and the tail begins: just before the opening."""
+        return open_at - 1 if open_at is not None else cut - 1
 
     def _measure(self, i: int):
         def hook(module, args, output):
@@ -1111,18 +1227,19 @@ class Pushes:
                 kwargs["cache_position"] = torch.arange(L, L + n * B, device="cuda")
             self.cur = full
             logits = model(input_ids=ids, past_key_values=copy.deepcopy(self.head), use_cache=True, **kwargs).logits[0].view(n, B, -1)
-            return self.move_logp(logits[:, 0], logits[:, S - 1], [logits[:, S + a] for a in range(K)])
+            return self.move_logp(logits[:, self.open_idx or 0], logits[:, S - 1], [logits[:, S + a] for a in range(K)])
         cache = _tile(self.head, n)
         ids = torch.tensor([self.tail] * n, device="cuda")
+        o = self.open_idx or 0
         if way == "tiled":
             self.cur = {i: f[:, :S] for i, f in full.items()}
             logits = model(input_ids=ids, past_key_values=cache, use_cache=True).logits
-            first, root = logits[:, 0], logits[:, -1]
+            first, root = logits[:, o], logits[:, -1]
         else:
             for p in range(S):
                 self.cur = {i: f[:, p : p + 1] for i, f in full.items()}
                 logits = model(input_ids=ids[:, p : p + 1], past_key_values=cache, use_cache=True).logits[:, -1]
-                first = logits if p == 0 else first
+                first = logits if p == o else first
             root = logits
         if K and self.flat_nodes:
             # All nodes in one pass: each slot's cache repeated K times, one node token per copy.
@@ -1196,6 +1313,136 @@ class Pushes:
                 pushed = np.logaddexp.reduce(effects[..., a], -1) - np.logaddexp.reduce(effects[..., b], -1)
                 out[f"{name}_shift"] = np.round(pushed - start, 3).tolist()  # [directions, signs, doses]
                 out[f"{name}_route_gap"] = round(float(start - base), 4)
+        return out
+
+
+class Patches(Pushes):
+    """One decision for `Model.patch_moves`: the `k` template tokens that follow the request
+    (from `start` in the prompt) take another prompt's residual stream after one layer, or
+    after every layer, and the decision's own reasoning then runs to its action. The shared
+    cache stops before those tokens, so the tail is the template, the reasoning and the
+    opening of the action; moves are read as in `Pushes`, keeping only the logits at the
+    opening and at the end of the tail.
+
+    `states` holds each source's residual stream at the template tokens after every layer
+    ([layers, k, width]; the decision's own under "own"). `swap` names the source that `half`
+    mixes towards and whose distance from "own" sets the norm of the `random` control (one
+    random unit direction per layer and token, from `seed`). A condition row is (source,
+    layer), layer `patching.ALL` meaning every layer."""
+
+    WAYS = ("tiled", "tiled-stepwise")
+
+    def __init__(self, owner: "Model", d: dict, start: int, k: int, states: dict, swap: str, seed: int = 0, cap: int = 32):
+        import torch
+
+        self.start, self.k, self.swap, self.cap = start, k, swap, cap
+        self.n_layers = len(owner.layers)
+        self.active = False
+        own = states["own"]
+        super().__init__(owner, d, [], [], torch.zeros(0, own.shape[-1]), [])
+        g = torch.Generator(device="cpu").manual_seed(seed)
+        noise = torch.randn(own.shape, generator=g).to(own.device)
+        noise = noise / noise.norm(dim=-1, keepdim=True)
+        gap = (states[swap] - own).norm(dim=-1, keepdim=True)
+        self.states = dict(states, half=own + 0.5 * (states[swap] - own), random=own + gap * noise)
+
+    def split(self, cut: int, open_at: int | None) -> int:
+        return self.start
+
+    def _set(self, i: int):
+        def hook(module, args, output):
+            if not self.active or i not in self.cur:
+                return None
+            slots, values = self.cur[i]
+            hidden = output[0] if isinstance(output, tuple) else output
+            hidden = hidden.clone()
+            hidden[slots, : values.shape[1]] = values.to(hidden.dtype)
+            return (hidden,) + tuple(output[1:]) if isinstance(output, tuple) else hidden
+
+        return hook
+
+    @contextmanager
+    def hooked(self):
+        handles = [layer.register_forward_hook(self._set(i)) for i, layer in enumerate(self.m.layers)]
+        try:
+            yield
+        finally:
+            for h in handles:
+                h.remove()
+
+    def fill(self, chunk: list[tuple[str, int]], n: int) -> dict:
+        """Per layer, which slots are set there and to what ([slots] and [slots, k, width])."""
+        import torch
+
+        from sika_interp.patching import ALL
+
+        per: dict[int, tuple[list[int], list]] = {}
+        for b, (source, layer) in enumerate(chunk):
+            for i in range(self.n_layers) if layer == ALL else [layer]:
+                slots, values = per.setdefault(i, ([], []))
+                slots.append(b)
+                values.append(self.states[source][i])
+        return {i: (torch.tensor(slots, device="cuda"), torch.stack(values)) for i, (slots, values) in per.items()}
+
+    def batch(self, way: str) -> int:
+        return min(self.cap, super().batch(way))
+
+    def pushed(self, way: str, chunk: list[tuple[str, int]], n: int):
+        """[n, labels] move log-probabilities with the chunk's patches."""
+        import copy
+
+        import torch
+
+        full = self.fill(chunk, n)
+        S, K, model = self.S, self.K, self.m.model
+        cache = _tile(self.head, n)
+        ids = torch.tensor([self.tail] * n, device="cuda")
+        o = self.open_idx or 0
+        self.active = True
+        try:
+            if way == "tiled":
+                self.cur = full
+                keep = torch.tensor(sorted({o, S - 1}), device="cuda")
+                logits = model(input_ids=ids, past_key_values=cache, use_cache=True, logits_to_keep=keep).logits
+                first, root = logits[:, 0], logits[:, -1]
+            elif way == "tiled-stepwise":
+                for p in range(S):
+                    self.cur = {i: (slots, v[:, p : p + 1]) for i, (slots, v) in full.items() if p < v.shape[1]}
+                    logits = model(input_ids=ids[:, p : p + 1], past_key_values=cache, use_cache=True).logits[:, -1]
+                    first = logits if p == o else first
+                root = logits
+            else:
+                raise ValueError(f"unsupported way {way!r}")
+        finally:
+            self.active, self.cur = False, {}
+        if K and self.flat_nodes:
+            wide = _rebatch(cache, n, lambda t: t.repeat_interleave(K, dim=0))
+            toks = torch.tensor([[node[-1]] for node in self.nodes] * n, device="cuda")
+            out = model(input_ids=toks, past_key_values=wide, use_cache=True).logits[:, -1].view(n, K, -1)
+            return self.move_logp(first, root, [out[:, a] for a in range(K)])
+        at_nodes, caches = [], {}
+        for a, node in enumerate(self.nodes):
+            c = copy.deepcopy(cache if self.parent[a] < 0 else caches[self.parent[a]])
+            tok = torch.full((n, 1), node[-1], device="cuda")
+            at_nodes.append(model(input_ids=tok, past_key_values=c, use_cache=True).logits[:, -1])
+            if a in self.parent:
+                caches[a] = c
+        return self.move_logp(first, root, at_nodes)
+
+    def noop(self, way: str) -> dict:
+        """How far setting the decision's own state after every layer lands from the plain
+        passes: the patch should change nothing then."""
+        from sika_interp.patching import ALL
+
+        got = self.pushed(way, [("own", ALL)], 1)[0]
+        gap = (got - self.truth).abs()
+        likely = self.truth > -5
+        return {"likely": float(gap[likely].max()) if bool(likely.any()) else 0.0}
+
+    def summary(self, effects, zero=None) -> dict:
+        out = super().summary(effects, zero)
+        out["tail"] = out["tail"][:160]
+        out["template"] = self.m.tok.decode(self.tail[: self.k])
         return out
 
 
@@ -1889,6 +2136,85 @@ def steer_all(
     print(f"  per decision: mean {sum(seconds) / len(seconds):.1f}s, max {max(seconds):.1f}s; GPU-seconds {sum(seconds):.0f}")
     for r in ok_rows[:6]:
         print(f"  {r['task_id']} {r['kind']}: right {r.get('right_margin')} harm {r.get('harm_margin')}  prompt {r['prompt_tokens']} tail {r['tail_tokens']} labels {len(r['labels'])} nodes {r['nodes']}")
+    print(f"saved {path}")
+
+
+@app.local_entrypoint()
+def patch_all(
+    traces: str,
+    run: str,
+    model: str,
+    arm: str = "primary",
+    seeds: str = "",
+    per: int = 25,
+    gpu: str = "H100",
+    cap: int = 32,
+    max_tail: int = 1200,
+    limit: int = 0,
+    out: str = "",
+    skip: str = "",
+):
+    """`patch_moves` over one arm of `patching.arms` (primary: failed Twi–English decisions
+    whose English twin succeeded; twi: the same for Twi; reverse: the English twins receiving
+    the Twi–English state), from the first-move decisions of `model` in `traces` (every seed
+    unless `seeds` lists some). `per` decisions go to each container; `limit` keeps that many
+    decisions spread over the arm, for a pilot; `skip` (a text file of saved array names)
+    leaves out decisions already done. Saves a JSON of every decision's margins and shifts
+    locally and prints the per-layer contrast and the layer choice on even seeds."""
+    import time
+
+    from sika_interp.decisions import collect
+    from sika_interp.patching import CONTROLS, REVERSE_SOURCES, SOURCES, arms, choose_layers, swap_minus_controls
+
+    started = time.time()
+    wanted = [int(s) for s in seeds.split(",")] if seeds else list(range(1_000_000, 1_000_100))
+    built = arms(collect(traces.split(","), model, wanted))
+    items = built[arm]
+    print(f"{model}: {len(items)} decisions in the {arm} arm; dropped {len(built['dropped'])}")
+    if skip:
+        done = set(Path(skip).read_text().split())
+        items = [i for i in items if f"{i['decision']['task_id'].replace('/', '_')}_{arm}.npz" not in done]
+        print(f"{len(done)} decisions already saved; running {len(items)}")
+    if limit:
+        step = max(1, len(items) // limit)
+        items = items[::step][:limit]
+    if not items:
+        print("nothing to run")
+        return
+    sources = REVERSE_SOURCES if arm == "reverse" else SOURCES
+    calls = [
+        Model.with_options(gpu=gpu)(model_id=model).patch_moves.spawn(run, items[i : i + per], list(sources), cap, max_tail)
+        for i in range(0, len(items), per)
+    ]
+    rows = [r for call in calls for r in call.get()]
+    grid = next(r.pop("rows") for r in rows if "rows" in r)
+    for r in rows:
+        r.pop("rows", None)
+    result = {"model": model, "run": run, "arm": arm, "sources": list(sources), "swap": items[0]["swap"], "rows": grid,
+              "dropped": built["dropped"], "decisions": rows}
+    path = Path(out or f"patch-{run}-{model.split('/')[-1]}-{arm}.json")
+    path.write_text(json.dumps(result))
+    ok_rows = [r for r in rows if "error" not in r]
+    seconds = [r["seconds"] for r in rows]
+    print(f"{model} {arm}: {len(rows)} decisions in {len(calls)} containers, {time.time() - started:.0f}s wall;"
+          f" errors {len(rows) - len(ok_rows)}")
+    for r in rows:
+        if "error" in r:
+            print(f"  SKIP {r['task_id']}: {r['error'][:160]}")
+    if not ok_rows:
+        print(f"saved {path}")
+        return
+    print(f"  per decision: mean {sum(seconds) / len(seconds):.1f}s, max {max(seconds):.1f}s; GPU-seconds {sum(seconds):.0f}")
+    first = ok_rows[0]
+    print(f"  way {first['way']}  batch {first['batch']}  checks {first['checks']}  template {first['template']!r} (k {first['k']})")
+    print(f"  tail tokens: median {sorted(r['tail_tokens'] for r in ok_rows)[len(ok_rows) // 2]}, max {max(r['tail_tokens'] for r in ok_rows)}")
+    print(f"  noop gap: worst {max(r['checks']['noop']['likely'] for r in ok_rows):.3f}; route gap: worst"
+          f" {max(abs(r.get('right_route_gap', 0.0)) for r in ok_rows):.3f}")
+    swap, controls = items[0]["swap"], CONTROLS[arm]
+    contrast = swap_minus_controls(grid, ok_rows, swap, controls)
+    top = sorted((k for k in contrast if k != "all"), key=lambda k: -contrast[k])[:5]
+    print(f"  swap minus controls (right margin), top layers: {[(k, contrast[k]) for k in top]}; all layers {contrast.get('all')}")
+    print(f"  layer choice on even seeds: {choose_layers(grid, ok_rows, swap, controls)}")
     print(f"saved {path}")
 
 
