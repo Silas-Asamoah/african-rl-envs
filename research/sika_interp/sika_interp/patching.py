@@ -198,6 +198,64 @@ def replay_plan(items: Sequence[dict], folder: str, layers: Sequence[int], best:
     }
 
 
+def replay_summary(rows: Iterable[dict], swap: str, controls: Sequence[str], best: int, seed: int = 0, boots: int = 2000) -> dict:
+    """Outcomes of patched replays (`patched.py` rows), per setting: the share of replays that
+    ended right (outcome 1) and harmful (−1), and the change from the unpatched setting,
+    paired by decision (each decision's share under the setting minus its unpatched share,
+    averaged, with a bootstrap over decisions). The primary contrast is the swap at `best`
+    minus the pooled controls at `best`; `settings` keeps every setting's numbers."""
+    import random
+
+    by: dict[str, dict[tuple[str, int], list[float]]] = {}
+    for r in rows:
+        if "outcome" not in r:
+            continue
+        by.setdefault(r["setting"], {}).setdefault((r["task_id"], r["turn"]), []).append(float(r["outcome"]))
+    base = by.get("unpatched", {})
+
+    def share(values: list[float], target: float) -> float:
+        return sum(v == target for v in values) / len(values)
+
+    def paired(setting: str, target: float) -> dict | None:
+        mine = by.get(setting)
+        if not mine:
+            return None
+        keys = sorted(k for k in mine if k in base)
+        if not keys:
+            return None
+        diffs = [share(mine[k], target) - share(base[k], target) for k in keys]
+        rng = random.Random(seed)
+        means = sorted(sum(rng.choice(diffs) for _ in diffs) / len(diffs) for _ in range(boots))
+        return {
+            "n": len(keys),
+            "share": round(sum(share(mine[k], target) for k in keys) / len(keys), 4),
+            "change": round(sum(diffs) / len(diffs), 4),
+            "ci": [round(means[int(boots * 0.025)], 4), round(means[int(boots * 0.975) - 1], 4)],
+        }
+
+    out: dict = {"settings": {}, "replays": sum(len(v) for s in by.values() for v in s.values())}
+    for setting in by:
+        out["settings"][setting] = {
+            "replays": sum(len(v) for v in by[setting].values()),
+            "right": paired(setting, 1.0),
+            "harmful": paired(setting, -1.0),
+        }
+    swap_name, pool = f"{swap} L{best}", [f"{c} L{best}" for c in controls]
+    if swap_name in by and all(p in by for p in pool):
+        keys = sorted(k for k in by[swap_name] if k in base and all(k in by[p] for p in pool))
+        diffs = [share(by[swap_name][k], 1.0) - sum(share(by[p][k], 1.0) for p in pool) / len(pool) for k in keys]
+        rng = random.Random(seed + 1)
+        means = sorted(sum(rng.choice(diffs) for _ in diffs) / len(diffs) for _ in range(boots)) if diffs else [0.0]
+        out["primary_contrast"] = {
+            "swap": swap_name,
+            "controls": pool,
+            "n": len(keys),
+            "right_change": round(sum(diffs) / len(diffs), 4) if diffs else None,
+            "ci": [round(means[int(boots * 0.025)], 4), round(means[max(int(boots * 0.975) - 1, 0)], 4)],
+        }
+    return out
+
+
 def choose_layers(rows: Sequence[tuple[str, int]], decisions: Sequence[dict], swap: str, controls: Sequence[str],
                   n: int = 2, margin: str = "right") -> dict:
     """The `n` single layers with the largest swap-minus-controls shift on even seeds, and the

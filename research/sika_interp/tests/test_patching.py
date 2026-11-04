@@ -170,3 +170,33 @@ def test_align_takes_the_request_end_from_the_first_turn_render():
     assert align(prompt, {"own": (own, 5), "en": (twin, 5)}) == (5, 3)
     assert align(prompt, {"own": (own, 5), "en": (twin, 5), "en_other": (other, 4)}) == (5, 2)
     assert align([9] + own[1:], {"own": (own, 5)}) == (5, 0)  # the prompt doesn't start with the own render
+
+
+def test_replay_summary_pairs_each_setting_with_the_unpatched_replays():
+    from sika_interp.patching import replay_summary
+
+    def rows(setting, outcomes_by_decision):
+        return [{"setting": setting, "task_id": t, "turn": 0, "sample": i, "outcome": o}
+                for t, outs in outcomes_by_decision.items() for i, o in enumerate(outs)]
+
+    data = (
+        rows("unpatched", {"a": [0, 0, 0, 1], "b": [0, 0, 0, 0], "c": [1, 1, 0, 0]})
+        + rows("en L15", {"a": [1, 1, 0, 1], "b": [0, 1, 0, 0], "c": [1, 1, 1, 0]})
+        + rows("random L15", {"a": [0, 0, 0, 1], "b": [0, 0, -1, 0], "c": [1, 1, 0, 0]})
+        + rows("en_other L15", {"a": [0, 1, 0, 1], "b": [0, 0, 0, 0], "c": [1, 0, 0, 0]})
+        + [{"setting": "en L15", "task_id": "a", "turn": 0, "sample": 9, "error": "boom"}]  # no outcome: ignored
+    )
+    s = replay_summary(data, "en", ("random", "en_other"), 15, boots=200)
+    assert s["replays"] == 48
+    en = s["settings"]["en L15"]
+    assert en["replays"] == 12 and en["right"]["n"] == 3
+    assert en["right"]["share"] == round((0.75 + 0.25 + 0.75) / 3, 4)
+    assert en["right"]["change"] == round(((0.75 - 0.25) + (0.25 - 0) + (0.75 - 0.5)) / 3, 4)
+    assert en["harmful"]["change"] == 0.0
+    assert s["settings"]["random L15"]["harmful"]["change"] == round(0.25 / 3, 4)
+    assert s["settings"]["unpatched"]["right"]["change"] == 0.0
+    c = s["primary_contrast"]
+    assert c["swap"] == "en L15" and c["controls"] == ["random L15", "en_other L15"] and c["n"] == 3
+    # a: 0.75 − (0.25 + 0.5)/2; b: 0.25 − 0; c: 0.75 − (0.5 + 0.25)/2
+    assert c["right_change"] == round(((0.75 - 0.375) + 0.25 + (0.75 - 0.375)) / 3, 4)
+    assert c["ci"][0] <= c["right_change"] <= c["ci"][1]
