@@ -163,3 +163,59 @@ def test_patch_sets_the_stream_at_the_template_tokens_after_the_chosen_layers(tm
     assert torch.allclose(model(ids, pos)[3], before[3])
     assert w.patch_state() == {"patch": None}
     assert model(ids[:3], pos[:3])  # a batch with no signature runs untouched
+
+
+class EmbedsModel(TokenModel):
+    """As vLLM runs a multimodal-capable model: embeddings in, ids left to the runner's
+    buffer, and M-RoPE positions of shape [3, tokens]."""
+
+    def forward(self, input_ids=None, positions=None, inputs_embeds=None):
+        hidden, residual = inputs_embeds, torch.zeros(inputs_embeds.shape[0], 8)
+        outs = []
+        for layer in self.layers:
+            hidden, residual = layer(hidden, residual)
+            outs.append(hidden + residual)
+        return outs
+
+
+class Buffer:
+    def __init__(self, gpu):
+        self.gpu = gpu
+
+
+def test_patch_reads_the_runner_buffers_when_the_model_gets_embeddings(tmp_path):
+    w = SteerExtension()
+    model = EmbedsModel()
+    w.model_runner = Runner(model)
+    ids, pos = flattened([21, 22, 23], B)
+    w.model_runner.input_ids = Buffer(torch.cat([ids, torch.zeros(5, dtype=ids.dtype)]))  # a longer buffer
+    mrope = pos[None].repeat(3, 1)
+    embeds = model.embed(ids)
+    before = model(input_ids=None, positions=mrope, inputs_embeds=embeds)
+    states = {"en": torch.randn(2, 2, 8).half()}
+    torch.save({"task_id": "t", "signature": torch.tensor(SIG), "first": 4, "k": 2, "layers": [1, 3], "states": states}, tmp_path / "t.pt")
+    w.patch(json.dumps({"folder": str(tmp_path), "source": "en", "layers": [1]}))
+    after = model(input_ids=None, positions=mrope, inputs_embeds=embeds)
+    tpl = [3 + 7, 3 + 8]
+    assert torch.allclose(after[1][tpl], states["en"][0].float(), atol=1e-2)
+    assert torch.allclose(after[0], before[0])
+    assert w.patch_state()["hits"] == 2
+    probe = w.patch_probe()
+    assert probe["forwards"] == 1 and probe["candidate_passes"] == 1 and probe["matched_passes"] == 1
+    assert probe["last"] == {"input_ids": [[len(ids)], str(ids.dtype)], "positions": [len(ids)]}
+    assert "mismatch" not in probe
+
+
+def test_patch_probe_records_the_first_mismatch():
+    w = token_worker()
+    model = w.model_runner.model
+    spec_ = {"task_id": "t", "signature": torch.tensor(SIG), "first": 4, "k": 2, "layers": [1], "vectors": torch.zeros(1, 2, 8)}
+    w._steer_install()
+    w._patch_state = {"specs": [spec_], "firsts": torch.tensor([4]), "source": "en", "layers": [1]}
+    w._patch_hits = 0
+    ids, pos = flattened([1, 2, 3, 4, 11, 12, 49, 41, 42, 7])  # one token differs from the signature
+    model(ids, pos)
+    probe = w.patch_probe()
+    assert probe["candidate_passes"] == 1 and probe["matched_passes"] == 0
+    assert probe["mismatch"] == {"task_id": "t", "batch_tokens": [11, 12, 49, 41, 42], "batch_positions": [4, 5, 6, 7, 8], "signature": SIG}
+    assert w.patch_state()["hits"] == 0

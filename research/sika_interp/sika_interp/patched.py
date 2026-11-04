@@ -109,6 +109,9 @@ async def run(args) -> None:
             state = await rpc(http, args.rpc, "patch_state")
             print(f"  done: right {sum(o == 1 for o in ok)}, harmful {sum(o == -1 for o in ok)}, other {sum(o == 0 for o in ok)},"
                   f" errors {len(rows) - len(ok)}; server {state}", flush=True)
+            if "source" in s:
+                probe = await rpc(http, args.rpc, "patch_probe")
+                print(f"  probe: {json.dumps(probe)[:1500]}", flush=True)
         await rpc(http, args.rpc, "unpatch")
 
 

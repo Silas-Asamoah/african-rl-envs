@@ -110,6 +110,7 @@ class SteerExtension:
         self._patch_state = None
         self._patch_current: dict = {}
         self._patch_hits = 0
+        self._patch_probe: dict = {"forwards": 0, "candidate_passes": 0, "matched_passes": 0, "last": None}
 
         def make(i: int):
             def hook(module, args, output):
@@ -144,15 +145,38 @@ class SteerExtension:
             self._patch_current = {}
             if st is None:
                 return None
-            input_ids = kwargs.get("input_ids", args[0] if args else None)
-            positions = kwargs.get("positions", args[1] if len(args) > 1 else None)
-            if input_ids is None or positions is None:
-                return None
             import torch
 
+            input_ids, positions = batch_tokens(self.model_runner, args, kwargs)
+            probe = self._patch_probe
+            probe["forwards"] += 1
+            probe["last"] = {
+                "input_ids": None if input_ids is None else [list(input_ids.shape), str(input_ids.dtype)],
+                "positions": None if positions is None else list(positions.shape),
+            }
+            if input_ids is None or positions is None:
+                return None
             if not bool(torch.isin(positions, st["firsts"].to(positions.device)).any()):
                 return None
-            self._patch_current = find_patches(input_ids, positions, st["specs"])
+            probe["candidate_passes"] += 1
+            found = find_patches(input_ids, positions, st["specs"])
+            if found:
+                probe["matched_passes"] += 1
+            elif "mismatch" not in probe:
+                # The first pass where a spec's first position occurs but nothing matched:
+                # keep what the batch holds there, against the spec, for `patch_probe`.
+                spec = st["specs"][0]
+                at = (positions == spec["first"]).nonzero().flatten()
+                if len(at):
+                    c = int(at[0])
+                    n = int(spec["signature"].shape[0])
+                    probe["mismatch"] = {
+                        "task_id": spec["task_id"],
+                        "batch_tokens": input_ids[c : c + n].tolist(),
+                        "batch_positions": positions[c : c + n].tolist(),
+                        "signature": spec["signature"].tolist(),
+                    }
+            self._patch_current = found
             return None
 
         model = self.model_runner.get_model()
@@ -198,6 +222,7 @@ class SteerExtension:
             "layers": [int(x) for x in cfg["layers"]],
         }
         self._patch_hits = 0
+        self._patch_probe = {"forwards": 0, "candidate_passes": 0, "matched_passes": 0, "last": None}
         return {"specs": len(specs), "source": cfg["source"], "layers": self._patch_state["layers"],
                 "k": sorted({s["k"] for s in specs})}
 
@@ -211,3 +236,30 @@ class SteerExtension:
         if st is None:
             return {"patch": None}
         return {"specs": len(st["specs"]), "source": st["source"], "layers": st["layers"], "hits": self._patch_hits}
+
+    def patch_probe(self) -> dict:
+        """What the passes since the last `patch` looked like: how many ran, how many held a
+        spec's first position, how many matched, the last pass's token and position shapes,
+        and, for the first pass that held a first position but matched nothing, the batch's
+        tokens there against the spec's signature."""
+        return dict(getattr(self, "_patch_probe", None) or {"forwards": 0})
+
+
+def batch_tokens(runner, args, kwargs):
+    """The flattened batch's token ids and each token's position in its sequence, from the
+    model forward's arguments, or from the runner's buffers when the model is handed
+    embeddings instead of ids (vLLM does that for multimodal-capable models). Positions laid
+    out for M-RoPE ([3, tokens]) reduce to their first row, which is the text position."""
+    input_ids = kwargs.get("input_ids", args[0] if args else None)
+    positions = kwargs.get("positions", args[1] if len(args) > 1 else None)
+    if positions is None:
+        return None, None
+    if positions.dim() == 2:
+        positions = positions[0]
+    n = int(positions.shape[0])
+    if input_ids is None:
+        buffer = getattr(runner, "input_ids", None)
+        ids = getattr(buffer, "gpu", buffer)
+        if ids is not None and hasattr(ids, "shape") and ids.shape[0] >= n:
+            input_ids = ids[:n]
+    return input_ids, positions
