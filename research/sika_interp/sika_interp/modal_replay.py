@@ -24,12 +24,14 @@ import modal
 
 MINISTRAL = "mistralai/Ministral-3-8B-Reasoning-2512"
 ENV = Path(__file__).resolve().parent.parent.parent.parent / "environments" / "sika_agent"
+VLLM_WHEEL = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl"
 cache = modal.Volume.from_name("sika-interp-cache", create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    # The pod's install: vLLM's CUDA 12.9 build with the matching torch, and prebuilt kernels.
-    .uv_pip_install("vllm==0.32.0", "mistral-common>=1.8.6", "ninja", "httpx", extra_options="--torch-backend=cu129")
-    .run_commands("vllm download-kernels")
+    # The pod's install: vLLM's CUDA 12.9 wheel with the matching torch, and the prebuilt
+    # kernels, which vLLM picks for the GPU it sees (so that step runs on one).
+    .uv_pip_install(f"vllm @ {VLLM_WHEEL}", "mistral-common>=1.8.6", "ninja", "httpx", extra_options="--torch-backend=cu129")
+    .run_commands("vllm download-kernels", gpu="H100")
     .env({"HF_HOME": "/cache/hf", "VLLM_SERVER_DEV_MODE": "1"})
     .add_local_dir(ENV, "/opt/sika_agent", copy=True, ignore=[".venv", "dist", "outputs", "**/__pycache__", "scripts/.cache"])
     # The driver's own environment, as the pod's client venv: the env package, the OpenAI client.
