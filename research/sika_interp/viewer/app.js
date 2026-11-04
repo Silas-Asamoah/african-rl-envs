@@ -478,38 +478,43 @@ async function renderPair() {
 }
 
 // ---------- request-end patching ----------
-// One block per arm (Twi–English, Twi, English decisions); each keeps its own selection.
+// Per arm (Twi–English, Twi or English decisions): the margin screen as a chart card in the
+// cards grid, the patched replays as a panel like the steered ones; each arm keeps its own
+// selection.
 const PTB = {};
 const PSRC = { own: "own state", en: "English twin", half: "halfway to the English twin", random: "random, same distance", en_other: "another seed's English request", tw: "Twi twin", "en-tw": "Twi–English twin" };
 const PCOL = { own: COL.ink2, en: COL.en, half: "#8fb8ef", random: COL.muted, en_other: "#1d55a3", tw: COL.tw, "en-tw": COL.mix, contrast: COL.good };
-const ARMS = ["primary", "twi", "reverse"];
+const PARMS = ["primary", "twi", "reverse"];
 function renderPatched(M) {
   const any = Object.values(DATA.models).some(m => m.patched);
   $("patched").hidden = !any; document.querySelectorAll('nav a[href="#patched"]').forEach(a => a.hidden = !any);
-  const box = $("pt-arms"); box.innerHTML = "";
-  if (!M.patched) { box.innerHTML = '<p class="def">No patching results for this model.</p>'; return; }
-  for (const arm of ARMS) {
+  const screens = $("pt-screens"), panels = $("pt-arms"); screens.innerHTML = ""; panels.innerHTML = "";
+  if (!M.patched) { panels.innerHTML = '<p class="def">No patching results for this model.</p>'; return; }
+  for (const arm of PARMS) {
     const A = M.patched[arm]; if (!A) continue;
     const st = PTB[arm] = PTB[arm] || { decision: null, setting: null, against: "unpatched", margin: "right" };
-    const swap = (A.screen || A.replays).swap, lang = A.language;
-    const panel = document.createElement("div"); panel.className = "panel"; panel.id = `pt-${arm}`;
-    const twin = arm === "twi" ? "the Twi–English twin" : "the Twi twin";
-    panel.innerHTML = `<h3><span style="color:${COL[lang]}">${LANG[lang]}</span> decisions · ${esc(PSRC[swap])}'s state in place of their own${arm === "twi" ? " · tw: " + twin : ""}</h3>
-      <div class="pt-screen" hidden><div class="controls pt-margin"></div><div class="legend pt-legend"></div><div class="pt-chart"></div><p class="def pt-screen-note"></p><div class="scroll"><div class="pt-all"></div></div></div>
-      <div class="pt-replays" hidden><div class="controls pt-against"></div><div class="scroll"><div class="pt-table"></div></div><div class="controls pt-controls"></div><div class="dgrid pt-compare"></div></div>`;
-    box.appendChild(panel);
-    patchScreen(A, st, panel);
-    patchTable(A, st, panel);
+    const who = `<span style="color:${COL[A.language]}">${LANG[A.language]}</span> decisions`;
+    if (A.screen) {
+      const fig = document.createElement("figure"); fig.className = "chart-card";
+      fig.innerHTML = `<figcaption>${who}: margin change by layer patched</figcaption><p class="def pt-note"></p><div class="controls pt-margin"></div><div class="legend pt-legend"></div><div class="pt-chart"></div><p class="def pt-all"></p>`;
+      screens.appendChild(fig);
+      patchScreen(A, arm, st, fig);
+    }
+    if (A.replays) {
+      const panel = document.createElement("div"); panel.className = "panel";
+      panel.innerHTML = `<h3>${who} · replays with the patch held</h3><p class="def">Replays ending right / harmful per setting (the source and the layer patched). Select a row to compare its transcripts with the unpatched ones.</p><div class="controls pt-against"></div><div class="scroll"><div class="pt-table"></div></div><div class="controls pt-controls"></div><div class="dgrid pt-compare"></div>`;
+      panels.appendChild(panel);
+      patchTable(A, st, panel);
+    }
   }
 }
-const ciText = c => (c ? `${fx(c[0], 3)} (${fx(c[1], 2)} to ${fx(c[2], 2)})` : "–");
-function patchScreen(A, st, panel) {
-  const wrap = panel.querySelector(".pt-screen"), sc = A.screen; wrap.hidden = !sc; if (!sc) return;
-  const margins = ["right", "harm"].filter(m => sc[m]);
+const ciText = c => (c ? `${fx(c[0], 2)} (${fx(c[1], 2)} to ${fx(c[2], 2)})` : "–");
+function patchScreen(A, arm, st, fig) {
+  const sc = A.screen, margins = ["right", "harm"].filter(m => sc[m]);
   if (!margins.includes(st.margin)) st.margin = margins[0];
-  const mg = panel.querySelector(".pt-margin");
+  const mg = fig.querySelector(".pt-margin");
   mg.innerHTML = margins.length > 1 ? `<span class="def">margin</span><span class="seg">${margins.map(m => `<button data-m="${m}" aria-pressed="${m === st.margin}">${m === "right" ? "right move" : "harmful move"}</button>`).join("")}</span>` : "";
-  mg.querySelectorAll("button").forEach(b => b.onclick = () => { st.margin = b.dataset.m; patchScreen(A, st, panel); });
+  mg.querySelectorAll("button").forEach(b => b.onclick = () => { st.margin = b.dataset.m; patchScreen(A, arm, st, fig); });
   const R = sc[st.margin], series = [];
   for (const src of sc.sources) {
     const v = R.sources[src]; if (!v) continue;
@@ -517,19 +522,17 @@ function patchScreen(A, st, panel) {
       extra: i => (v.layers[i] ? `(${fx(v.layers[i][1], 2)} to ${fx(v.layers[i][2], 2)})` : "") });
   }
   const C = R.contrast;
-  if (C) series.push({ name: `contrast: ${sc.swap} − controls`, color: PCOL.contrast, values: C.layers.map(c => (c ? c[0] : null)),
+  if (C) series.push({ name: `contrast: ${sc.swap} − ${sc.controls.join(", ")}`, color: PCOL.contrast, values: C.layers.map(c => (c ? c[0] : null)),
     marks: C.layers.map(c => c && (c[1] > 0 || c[2] < 0)), extra: i => (C.layers[i] ? `(${fx(C.layers[i][1], 2)} to ${fx(C.layers[i][2], 2)})${C.layers[i][1] > 0 || C.layers[i][2] < 0 ? " ★" : ""}` : "") });
   const vals = series.flatMap(s => s.values).filter(v => v != null);
   const lo = Math.min(0, Math.floor(Math.min(...vals) * 10) / 10 - 0.05), hi = Math.max(0, Math.ceil(Math.max(...vals) * 10) / 10 + 0.05);
-  legend(panel.querySelector(".pt-legend"), series.map(s => ({ name: s.name, color: s.color, dash: s.dash })));
-  lines(panel.querySelector(".pt-chart"), series, { y: [lo, hi], yfmt: v => fx(v, 2), zero: true, xs: sc.layers, xlabel: "layer patched", label: `Change in the ${st.margin} margin by layer patched` });
-  panel.querySelector(".pt-screen-note").textContent = `Change in the log-odds of the ${st.margin === "right" ? "right" : "harmful"} move (nats) after patching one layer, mean over ${R.n} decisions; hover for the 95% interval. ● contrast whose interval excludes 0. k = ${sc.k} template tokens.`;
-  const all = panel.querySelector(".pt-all");
-  all.innerHTML = `<table class="grid"><thead><tr><th>all layers at once</th>${sc.sources.map(s => `<th style="color:${PCOL[s] || COL.ink}">${esc(s)}</th>`).join("")}${C ? `<th style="color:${PCOL.contrast}">contrast</th>` : ""}</tr></thead><tbody><tr><td class="def">mean (95% interval)</td>${sc.sources.map(s => `<td>${ciText((R.sources[s] || {}).all)}</td>`).join("")}${C ? `<td>${ciText(C.all)}</td>` : ""}</tr></tbody></table>`;
+  fig.querySelector(".pt-note").textContent = `Change in the log-odds of the ${st.margin === "right" ? "right" : "harmful"} move (nats) at the decision, mean over ${R.n} decisions, after patching one layer; hover for the 95% interval. ● contrast whose interval excludes 0. k = ${sc.k} template token${sc.k === 1 ? "" : "s"}.${arm === "twi" ? " tw: the Twi–English twin." : ""}`;
+  legend(fig.querySelector(".pt-legend"), series.map(s => ({ name: s.name, color: s.color, dash: s.dash })));
+  lines(fig.querySelector(".pt-chart"), series, { y: [lo, hi], yfmt: v => fx(v, 2), zero: true, xs: sc.layers, xlabel: "layer patched", label: `Change in the ${st.margin} margin by layer patched` });
+  fig.querySelector(".pt-all").textContent = "all layers at once: " + sc.sources.filter(s => R.sources[s]).map(s => `${s} ${ciText(R.sources[s].all)}`).concat(C ? [`contrast ${ciText(C.all)}`] : []).join(" · ");
 }
 function patchTable(A, st, panel) {
-  const wrap = panel.querySelector(".pt-replays"), T = A.replays; wrap.hidden = !T; if (!T) return;
-  const table = panel.querySelector(".pt-table"), ctl = panel.querySelector(".pt-controls"), vs = panel.querySelector(".pt-against");
+  const T = A.replays, table = panel.querySelector(".pt-table"), ctl = panel.querySelector(".pt-controls"), vs = panel.querySelector(".pt-against");
   const hasControls = T.settings.some(n => T.summary[n].controls);
   if (!hasControls) st.against = "unpatched";
   const vsC = st.against === "controls", cnames = (T.summary[T.settings.find(n => T.summary[n].controls)] || {}).controls || [];
@@ -546,7 +549,7 @@ function patchTable(A, st, panel) {
     const detail = `${c.right} right, ${c.harmful} harmful, ${c.unfinished} not finished, ${c.errors} errors, of ${c.n}`;
     h += `<tr data-setting="${esc(name)}" style="cursor:pointer"><td>${esc(name)}</td><td class="def">${esc(c.source ? PSRC[c.source] || c.source : "none")}</td><td>${c.layers ? c.layers.join(", ") : "–"}</td><td style="text-align:right" title="${detail}">${pct(c.n ? c.right / c.n : null)}</td><td>${delta(dR, true)}</td><td style="text-align:right" title="${detail}">${pct(c.n ? c.harmful / c.n : null)}</td><td>${delta(dH, false)}</td></tr>`;
   }
-  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions × ${T.samples} replays per setting · Δ in percentage points ${vsC ? `against ${cnames.join(" and ")} (their replays pooled per decision)` : "against the unpatched replays"}, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns from its decision counts as not finished · select a row to compare its transcripts with the unpatched ones</p>`;
+  table.innerHTML = h + `</tbody></table><p class="def">${T.decisions.length} decisions × ${T.samples} replays per setting · Δ in percentage points ${vsC ? `against ${cnames.join(" and ")} (their replays pooled per decision)` : "against the unpatched replays"}, paired by decision; ★ 95% interval excludes 0 (hover for it) · a replay needing more than ${T.turn_cap} model turns from its decision counts as not finished</p>`;
   table.querySelectorAll("tr[data-setting]").forEach(tr => tr.onclick = () => { st.setting = tr.dataset.setting; drawPatchCompare(T, st, panel); });
   const pick = T.settings.find(n => T.summary[n].source === T.swap && (T.summary[n].layers || [])[0] === T.best) || T.settings[1];
   st.setting = st.setting && T.settings.includes(st.setting) ? st.setting : pick;
