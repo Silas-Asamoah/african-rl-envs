@@ -621,8 +621,72 @@ class Model:
                 h.remove()
         return torch.stack([captured[i] for i in range(len(self.layers))])
 
+    def template_sources(self, item: dict) -> tuple[list[int], int, int, dict]:
+        """For a patching item: the decision's prompt, where its request ends, how many
+        template tokens follow that it shares with the first-turn prompt and with every
+        source's prompt, and each source's (prompt, request end)."""
+        from sika_interp.patching import shared_prefix, template_span
+
+        d = item["decision"]
+        prompt, end = self.request_end(d["messages"], d["tools"])
+        rendered = {name: self.request_end(msgs, d["tools"]) for name, msgs in item["sources"].items()}
+        k = template_span(prompt, *rendered["own"])
+        for ids, e in rendered.values():
+            k = min(k, shared_prefix(prompt[end : end + k], ids[e : e + k]))
+        return prompt, end, k, rendered
+
     @modal.method()
-    def patch_moves(self, run: str, items: list[dict], sources: list[str], cap: int = 32, max_tail: int = 1200, seed: int = 0) -> list[dict]:
+    def patch_specs(self, run: str, items: list[dict], layers: list[int], seed: int = 0, signature: int = 24) -> list[dict]:
+        """Spec files for patched replays (`steer_serve.patch_specs`): for each item, the
+        token ids of the end of the request and the template tokens (the last `signature`
+        request tokens), their first position, and every source's residual stream at the
+        template tokens after each of `layers`, with `half` and `random` built as in
+        `Patches`. One `.pt` per decision under patch/specs/<run>/<model>/<arm>/."""
+        import torch
+
+        out = []
+        for item in items:
+            d = item["decision"]
+            row = {"task_id": d["task_id"], "arm": item["arm"]}
+            try:
+                prompt, end, k, rendered = self.template_sources(item)
+                row |= {"k": k, "start": end}
+                if k == 0:
+                    row["error"] = "no template tokens shared with every source"
+                    continue
+                states = {name: self.states_at(ids, list(range(e, e + k)))[layers] for name, (ids, e) in rendered.items()}
+                own, swap = states["own"], states[item["swap"]]
+                g = torch.Generator(device="cpu").manual_seed(seed + d["seed"])
+                full = torch.randn(len(self.layers), k, own.shape[-1], generator=g)[layers].to(own.device)
+                noise = full / full.norm(dim=-1, keepdim=True)
+                states["half"] = own + 0.5 * (swap - own)
+                states["random"] = own + (swap - own).norm(dim=-1, keepdim=True) * noise
+                first = max(0, end - signature)
+                folder = Path("/cache/patch/specs") / run / self.model_id.split("/")[-1] / item["arm"]
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / (d["task_id"].replace("/", "_") + ".pt")
+                torch.save(
+                    {
+                        "task_id": d["task_id"],
+                        "turn": d["index"],
+                        "signature": torch.tensor(prompt[first : end + k]),
+                        "first": first,
+                        "k": k,
+                        "layers": [int(x) for x in layers],
+                        "states": {name: s.half().cpu() for name, s in states.items()},
+                    },
+                    path,
+                )
+                row |= {"saved": str(path), "signature_tokens": end + k - first, "sources": sorted(states)}
+            except Exception as e:  # noqa: BLE001 - the row says what failed
+                row["error"] = f"{type(e).__name__}: {e}"[:500]
+            finally:
+                out.append(row)
+        cache.commit()
+        return out
+
+    @modal.method()
+    def patch_moves(self, run: str, items: list[dict], sources: list[str], cap: int = 64, max_tail: int = 2500, seed: int = 0) -> list[dict]:
         """Activation patching at decisions (`items` from `patching.arms`): for each, the
         template tokens after the request are set to each source's state after each layer and
         after all layers (`patching.conditions` over `sources`), the decision's own reasoning
@@ -637,7 +701,7 @@ class Model:
         import numpy as np
         import torch
 
-        from sika_interp.patching import conditions, shared_prefix, template_span
+        from sika_interp.patching import conditions
 
         rows = conditions(len(self.layers), list(sources))
         folder = Path("/cache/patch") / run / self.model_id.split("/")[-1]
@@ -653,11 +717,7 @@ class Model:
             row = {k: d[k] for k in ("task_id", "family", "category", "language", "seed", "kind", "index", "reward", "took", "rule")}
             row["arm"] = item["arm"]
             try:
-                prompt, end = self.request_end(d["messages"], d["tools"])
-                rendered = {name: self.request_end(msgs, d["tools"]) for name, msgs in item["sources"].items()}
-                k = template_span(prompt, *rendered["own"])
-                for ids, e in rendered.values():
-                    k = min(k, shared_prefix(prompt[end : end + k], ids[e : e + k]))
+                prompt, end, k, rendered = self.template_sources(item)
                 row |= {"k": k, "start": end, "prompt_tokens": len(prompt)}
                 if k == 0:
                     row["error"] = "no template tokens shared with every source"
@@ -1385,7 +1445,14 @@ class Patches(Pushes):
         return {i: (torch.tensor(slots, device="cuda"), torch.stack(values)) for i, (slots, values) in per.items()}
 
     def batch(self, way: str) -> int:
-        return min(self.cap, super().batch(way))
+        """`cap` slots for a tail up to 700 tokens, halving as the tail doubles (every slot
+        carries the whole tail through the model)."""
+        cap = self.cap
+        for limit in (700, 1400, 2800):
+            if self.S <= limit:
+                break
+            cap = max(4, cap // 2)
+        return min(cap, super().batch(way))
 
     def pushed(self, way: str, chunk: list[tuple[str, int]], n: int):
         """[n, labels] move log-probabilities with the chunk's patches."""
@@ -2148,8 +2215,8 @@ def patch_all(
     seeds: str = "",
     per: int = 25,
     gpu: str = "H100",
-    cap: int = 32,
-    max_tail: int = 1200,
+    cap: int = 64,
+    max_tail: int = 2500,
     limit: int = 0,
     out: str = "",
     skip: str = "",
@@ -2216,6 +2283,28 @@ def patch_all(
     print(f"  swap minus controls (right margin), top layers: {[(k, contrast[k]) for k in top]}; all layers {contrast.get('all')}")
     print(f"  layer choice on even seeds: {choose_layers(grid, ok_rows, swap, controls)}")
     print(f"saved {path}")
+
+
+@app.local_entrypoint()
+def patch_specs_all(traces: str, run: str, model: str, layers: str, arm: str = "primary", seeds: str = "", per: int = 40, gpu: str = "H100"):
+    """Spec files (`patch_specs`) for every decision of one arm at the chosen `layers`
+    (comma-separated), for the patched replays. Prints the folder and any failures."""
+    from sika_interp.decisions import collect
+    from sika_interp.patching import arms
+
+    wanted = [int(s) for s in seeds.split(",")] if seeds else list(range(1_000_000, 1_000_100))
+    items = arms(collect(traces.split(","), model, wanted))[arm]
+    chosen = [int(x) for x in layers.split(",")]
+    calls = [Model.with_options(gpu=gpu)(model_id=model).patch_specs.spawn(run, items[i : i + per], chosen) for i in range(0, len(items), per)]
+    rows = [r for call in calls for r in call.get()]
+    ok_rows = [r for r in rows if "error" not in r]
+    print(f"{model} {arm}: {len(ok_rows)}/{len(rows)} spec files at layers {chosen}; k {sorted({r['k'] for r in ok_rows})};"
+          f" signature tokens {sorted({r['signature_tokens'] for r in ok_rows})[:3]}…")
+    for r in rows:
+        if "error" in r:
+            print(f"  FAIL {r['task_id']}: {r['error'][:160]}")
+    if ok_rows:
+        print(f"folder: {Path(ok_rows[0]['saved']).parent}")
 
 
 def anchor_episodes(traces: str, model: str, task_ids: str) -> list[dict]:

@@ -72,3 +72,94 @@ def test_random_direction_and_unsteer():
     w.unsteer()
     assert torch.allclose(w.model_runner.model(x)[3], before[3])
     assert w.steer_state() == {"steer": None}
+
+
+from sika_interp.steer_serve import find_patches, patch_specs  # noqa: E402
+
+
+class TokenModel(torch.nn.Module):
+    """vLLM-style model over a flattened batch: token ids and their positions in their own
+    sequences; returns the residual stream after each layer."""
+
+    def __init__(self, n=4, vocab=50, hidden=8):
+        super().__init__()
+        torch.manual_seed(0)
+        self.embed = torch.nn.Embedding(vocab, hidden)
+        self.layers = torch.nn.ModuleList(Layer(hidden) for _ in range(n))
+
+    def forward(self, input_ids, positions):
+        hidden, residual = self.embed(input_ids), torch.zeros(input_ids.shape[0], 8)
+        outs = []
+        for layer in self.layers:
+            hidden, residual = layer(hidden, residual)
+            outs.append(hidden + residual)
+        return outs
+
+
+def token_worker():
+    w = SteerExtension()
+    w.model_runner = Runner(TokenModel())
+    return w
+
+
+def flattened(*sequences):
+    """Token ids and positions of several sequences laid end to end, as vLLM batches them."""
+    ids = torch.tensor([t for s in sequences for t in s])
+    pos = torch.tensor([p for s in sequences for p in range(len(s))])
+    return ids, pos
+
+
+SIG = [11, 12, 13, 41, 42]  # three request tokens then two template tokens
+B = [1, 2, 3, 4] + SIG + [7, 8, 9]  # the signature at positions 4..8
+
+
+def spec(vectors):
+    return {"signature": torch.tensor(SIG), "first": 4, "k": 2, "layers": [1, 3], "vectors": vectors}
+
+
+def test_find_patches_needs_the_whole_signature_at_its_positions():
+    vectors = torch.arange(2 * 2 * 8, dtype=torch.float32).view(2, 2, 8)
+    a = [21, 22, 23, 24, 25, 26]
+    decoy = [0] + B  # the same tokens, one position later
+    cut = [1, 2, 3, 4, 11, 12]  # the signature split off by a chunk boundary
+    ids, pos = flattened(a, B, decoy, cut)
+    found = find_patches(ids, pos, [spec(vectors)])
+    assert sorted(found) == [1, 3]
+    idx, vec = found[1]
+    assert idx.tolist() == [len(a) + 7, len(a) + 8]  # the template tokens of B only
+    assert torch.equal(vec, vectors[0])
+    assert torch.equal(found[3][1], vectors[1])
+    assert find_patches(*flattened(a, decoy), [spec(vectors)]) == {}
+
+
+def test_patch_sets_the_stream_at_the_template_tokens_after_the_chosen_layers(tmp_path):
+    w = token_worker()
+    model = w.model_runner.model
+    ids, pos = flattened([21, 22, 23], B)
+    before = model(ids, pos)
+    states = {"en": torch.randn(2, 2, 8).half(), "own": torch.stack([before[1][3 + 7 : 3 + 9], before[3][3 + 7 : 3 + 9]]).half()}
+    torch.save({"task_id": "t", "signature": torch.tensor(SIG), "first": 4, "k": 2, "layers": [1, 3], "states": states}, tmp_path / "t.pt")
+    loaded = patch_specs(tmp_path, "en", [3], "cpu")
+    assert len(loaded) == 1 and loaded[0]["layers"] == [3] and loaded[0]["vectors"].shape == (1, 2, 8)
+    assert torch.equal(loaded[0]["vectors"][0], states["en"][1].float())
+
+    info = w.patch(json.dumps({"folder": str(tmp_path), "source": "en", "layers": [1, 3]}))
+    assert info == {"specs": 1, "source": "en", "layers": [1, 3], "k": [2]}
+    after = model(ids, pos)
+    tpl = [3 + 7, 3 + 8]
+    assert torch.allclose(after[0], before[0])  # untouched before the first chosen layer
+    assert torch.allclose(after[1][tpl], states["en"][0].float(), atol=1e-2)
+    assert torch.allclose(after[3][tpl], states["en"][1].float(), atol=1e-2)
+    others = [i for i in range(len(ids)) if i not in tpl]
+    assert torch.allclose(after[1][others], before[1][others])
+    assert not torch.allclose(after[2][tpl], before[2][tpl])  # the change flows on to the next layer
+    assert w.patch_state() == {"specs": 1, "source": "en", "layers": [1, 3], "hits": 4}
+
+    # The decision's own state is a no-op.
+    w.patch(json.dumps({"folder": str(tmp_path), "source": "own", "layers": [1, 3]}))
+    same = model(ids, pos)
+    assert torch.allclose(same[3], before[3], atol=1e-2)
+    w.unpatch()
+    assert torch.allclose(model(ids, pos)[3], before[3])
+    assert w.patch_state() == {"patch": None}
+    assert model(ids[:3], pos[:3])  # a batch with no signature runs untouched
