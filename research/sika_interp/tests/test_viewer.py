@@ -1,6 +1,6 @@
 import json
 
-from sika_interp.viewer import steered, wording
+from sika_interp.viewer import patch_screen, patched, patched_replays, steered, wording
 
 
 def _run(tmp_path, outcomes, broken=()):
@@ -70,3 +70,69 @@ def test_wording_counts_matched_twi_english_requests_with_no_twi_word(tmp_path):
     got = wording(tmp_path, "q")
     assert got["en_tw"] == 2 and got["en_tw_no_twi"] == 1
     assert 0 < got["reviewed"] <= got["phrasings"]
+
+
+def _patch_run(tmp_path, outcomes: dict[str, list[float]]):
+    """A tiny primary arm: two Twi–English decisions, one replay each; `outcomes` gives each
+    setting's outcome per decision. Settings: own and the controls at layer 15, the swap at
+    14 and 15."""
+    plan = {"arm": "primary", "samples": 1,
+            "settings": [{"name": "unpatched"}, {"name": "own L15", "source": "own", "layers": [15]}, {"name": "en L14", "source": "en", "layers": [14]},
+                         {"name": "en L15", "source": "en", "layers": [15]}, {"name": "random L15", "source": "random", "layers": [15]},
+                         {"name": "en_other L15", "source": "en_other", "layers": [15]}],
+            "decisions": [{"task_id": f"eval/payoff/en-tw/{i}", "turn": 0} for i in range(2)]}
+    rows = [{"setting": name, "task_id": d["task_id"], "turn": 0, "sample": 0, "outcome": o, "original": 0.0,
+             "transcript": [{"role": "assistant", "content": "ok"}] * (13 if o is None else 1)}
+            for name, os in outcomes.items() for d, o in zip(plan["decisions"], os)]
+    (tmp_path / "patch").mkdir()
+    (tmp_path / "patch" / "plan-q-primary.json").write_text(json.dumps(plan))
+    (tmp_path / "patch" / "patched-q-primary.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    return plan, rows
+
+
+def test_patched_replays_pair_each_setting_with_unpatched_and_with_the_controls_at_the_best_layer(tmp_path):
+    plan, rows = _patch_run(tmp_path, {"unpatched": [0.0, 0.0], "own L15": [0.0, 0.0], "en L14": [1.0, 1.0], "en L15": [1.0, 0.0],
+                                       "random L15": [0.0, 0.0], "en_other L15": [1.0, 0.0]})
+    got = patched_replays(rows, plan, "en-tw", "en", ("random", "en_other"), tmp_path, "patched-q-primary")
+    assert got["best"] == 15 and got["settings"][0] == "unpatched"
+    assert got["summary"]["en L15"]["right"] == 1 and got["summary"]["en L15"]["d_right"][0] == 0.5
+    # Against the controls at layer 15, pooled per decision: decision 0 has 0.5 right among them, decision 1 none.
+    assert got["summary"]["en L15"]["controls"] == ["random L15", "en_other L15"]
+    assert got["summary"]["en L15"]["r_right"][0] == 0.25 and got["summary"]["en L14"]["r_right"][0] == 0.75
+    assert "r_right" not in got["summary"]["random L15"] and "d_right" not in got["summary"]["unpatched"]
+    assert got["summary"]["unpatched"]["r_right"][0] == -0.25
+    # One file per decision, every setting's replays there.
+    assert json.loads((tmp_path / "patched-q-primary" / "1.json").read_text())["results"]["en L14"][0]["outcome"] == 1.0
+
+
+def test_a_patched_replay_past_the_turn_cap_counts_as_not_finished(tmp_path):
+    plan, rows = _patch_run(tmp_path, {"unpatched": [0.0, 0.0], "en L15": [None, 1.0]})
+    for r in rows:
+        if r["outcome"] is None:
+            r["outcome"] = 1.0  # ended right, but after 13 model turns
+    got = patched_replays(rows, plan, "en-tw", "en", ("random", "en_other"), tmp_path, "patched-q-primary")
+    assert got["summary"]["en L15"]["unfinished"] == 1 and got["summary"]["en L15"]["right"] == 1
+
+
+def test_patch_screen_gives_each_source_per_layer_and_the_swap_minus_the_controls(tmp_path):
+    rows = [["en", 0], ["random", 0], ["en_other", 0], ["en", 1], ["random", 1], ["en_other", 1], ["en", -1], ["random", -1], ["en_other", -1]]
+    decisions = [{"k": 7, "right_shift": [0.2, -0.4, 0.0, 0.1, 0.1, 0.1, -1.0, -2.0, -1.0]},
+                 {"k": 7, "right_shift": [0.4, -0.2, 0.0, 0.1, 0.1, 0.1, -1.0, -2.0, -1.0]},
+                 {"k": 7}]  # no margin read
+    got = patch_screen({"sources": ["en", "random", "en_other"], "rows": rows, "decisions": decisions}, "en", ("random", "en_other"))
+    assert got["layers"] == [0, 1] and got["k"] == 7 and got["right"]["n"] == 2 and "harm" not in got
+    assert got["right"]["sources"]["en"]["layers"][0][0] == 0.3 and got["right"]["sources"]["random"]["all"][0] == -2.0
+    # Contrast at layer 0: en − mean(random, en_other) = 0.2 − (−0.2) and 0.4 − (−0.1): mean 0.45; at layer 1: 0.
+    assert got["right"]["contrast"]["layers"][0][0] == 0.45 and got["right"]["contrast"]["layers"][1][0] == 0.0
+    assert got["right"]["contrast"]["all"][0] == 0.5
+
+
+def test_patched_collects_the_arms_that_have_a_screen_or_replays(tmp_path):
+    _patch_run(tmp_path, {"unpatched": [0.0, 0.0], "en L15": [1.0, 0.0]})
+    (tmp_path / "patch" / "q-twi.json").write_text(json.dumps({"sources": ["en", "random"], "rows": [["en", 0], ["random", 0]],
+                                                                "decisions": [{"k": 7, "right_shift": [0.1, -0.1]}]}))
+    got = patched(tmp_path, "q", tmp_path)
+    assert set(got) == {"primary", "twi"}
+    assert got["primary"]["screen"] is None and got["primary"]["replays"]["summary"]["en L15"]["d_right"][0] == 0.5
+    assert got["twi"]["replays"] is None and got["twi"]["screen"]["right"]["contrast"]["layers"][0][0] == 0.2
+    assert patched(tmp_path, "m", tmp_path) is None

@@ -5,14 +5,17 @@
 Reads the traces and the summaries the Modal jobs wrote from `--runs`, laid out as the study
 left them, and writes into `--out`: data.json (everything the page draws inline), the page
 itself (page.html, data inlined) and the files it fetches on demand: steer-<model>.json (the
-neuron × decision steering matrix), steer-<model>-<family>.json (per-decision detail) and
-cards-<model>.json (neuron cards with their top-firing contexts). Missing pieces are left out.
+neuron × decision steering matrix), steer-<model>-<family>.json (per-decision detail),
+cards-<model>.json (neuron cards with their top-firing contexts) and, per decision, the
+steered and patched replays (steered-<model>/<j>.json, patched-<model>-<arm>/<j>.json).
+Missing pieces are left out.
 """
 
 import argparse
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 from sika_interp.results import episodes, wilson
@@ -353,6 +356,23 @@ def card_file(runs: Path, key: str) -> list[dict] | None:
     return cards
 
 
+def _trim(m: dict) -> dict:
+    """A transcript message cut down for the page: reasoning to 2,000 characters, content to
+    1,200, tool calls to name(arguments[:200])."""
+    if m["role"] == "verdict":
+        return m
+    t = {"role": m["role"]}
+    if m.get("reasoning_content"):
+        t["reasoning"] = m["reasoning_content"][:2000]
+    if m.get("content"):
+        t["content"] = str(m["content"])[:1200]
+    if m.get("tool_calls"):
+        t["calls"] = [f"{c['function']['name']}({c['function']['arguments'][:200]})" for c in m["tool_calls"]]
+    if m["role"] == "tool":
+        t["name"] = m.get("name")
+    return t
+
+
 def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
     """Steered transcripts: writes steered-<key>/<j>.json for each decision j (every setting's
     replays there, outcome and trimmed transcript) and returns the summary the page draws
@@ -361,20 +381,6 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
     plan = _read(runs / SOURCES["plan"].format(key=key))
     if not path.exists() or not plan:
         return None
-
-    def trim(m: dict) -> dict:
-        if m["role"] == "verdict":
-            return m
-        t = {"role": m["role"]}
-        if m.get("reasoning_content"):
-            t["reasoning"] = m["reasoning_content"][:2000]
-        if m.get("content"):
-            t["content"] = str(m["content"])[:1200]
-        if m.get("tool_calls"):
-            t["calls"] = [f"{c['function']['name']}({c['function']['arguments'][:200]})" for c in m["tool_calls"]]
-        if m["role"] == "tool":
-            t["name"] = m.get("name")
-        return t
 
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     by: dict = defaultdict(lambda: defaultdict(list))
@@ -392,7 +398,7 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
         usable = error is None and first is not None and bool(first.get("tool_calls") or (first.get("content") or "").strip())
         by[r["setting"]][f"{r['task_id']}@{r['turn']}"].append(
             {"sample": r["sample"], "outcome": outcome, "error": error, "note": note, "usable": usable,
-             "transcript": [trim(m) for m in r.get("transcript", [])]}
+             "transcript": [_trim(m) for m in r.get("transcript", [])]}
         )
     plan_settings = __import__("sika_interp.steered", fromlist=["settings"]).settings(plan)
     names = [s["name"] for s in plan_settings]
@@ -453,6 +459,138 @@ def steered(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
     directions = {d["name"]: {k: d.get(k) for k in ("layer", "neuron", "seed", "why", "picked_for")} for d in plan["directions"]}
     return {"settings": names, "decisions": decisions, "folder": f"steered-{key}", "summary": summary, "directions": directions,
             "doses": plan["doses"], "samples": plan.get("samples"), "turn_cap": turn_cap}
+
+
+# ---------- request-end patching ----------
+PATCH = {"screen": "patch/{key}-{arm}.json", "replays": "patch/patched-{key}-{arm}.jsonl", "plan": "patch/plan-{key}-{arm}.json"}
+"""The patching study's files under --runs: the margin screen (`modal_app.patch_all`), the
+patched replays (`patched.py`) and their plan (`patching.replay_plan`)."""
+ARMS = {
+    "primary": {"language": "en-tw", "swap": "en", "controls": ("random", "en_other")},
+    "twi": {"language": "tw", "swap": "en", "controls": ("random", "en_other")},
+    "reverse": {"language": "en", "swap": "en-tw", "controls": ("random",)},
+}
+"""Each arm: the language of its decisions, the source its hypothesis names and the controls
+that source is compared with."""
+
+
+def _bootstrap(values, boot: int = 2000, seed: int = 0) -> list | None:
+    """[mean, low, high] with a 95% bootstrap interval over `values` (NaNs dropped), or None
+    when nothing is left."""
+    import numpy as np
+
+    v = np.asarray(values, dtype=float)
+    v = v[~np.isnan(v)]
+    if not len(v):
+        return None
+    rng = np.random.default_rng(seed)
+    means = v[rng.integers(0, len(v), (boot, len(v)))].mean(1)
+    return [round(float(v.mean()), 4), round(float(np.percentile(means, 2.5)), 4), round(float(np.percentile(means, 97.5)), 4)]
+
+
+def patch_screen(screen: dict, swap: str, controls: Sequence[str]) -> dict:
+    """One arm's margin screen (`modal_app.patch_all` output): per margin (right, harm), each
+    source's mean shift after each layer and after all layers, with 95% bootstrap intervals
+    over decisions, and the contrast, the swap's shift minus the mean of the controls' shifts
+    in the same decision, likewise."""
+    import numpy as np
+
+    from sika_interp.patching import ALL
+
+    rows = [tuple(r) for r in screen["rows"]]
+    col = {rc: i for i, rc in enumerate(rows)}
+    layers = sorted({layer for _, layer in rows if layer != ALL})
+    out = {"sources": screen["sources"], "swap": swap, "controls": [c for c in controls if c in screen["sources"]], "layers": layers,
+           "k": next((d["k"] for d in screen["decisions"] if "k" in d), None), "decisions": len(screen["decisions"])}
+    for margin in ("right", "harm"):
+        ds = [d for d in screen["decisions"] if d.get(f"{margin}_shift") and len(d[f"{margin}_shift"]) == len(rows)]
+        if not ds:
+            continue
+        shifts = np.array([[np.nan if x is None else x for x in d[f"{margin}_shift"]] for d in ds], dtype=float)
+
+        def at(source, layer):
+            return shifts[:, col[(source, layer)]] if (source, layer) in col else None
+
+        per = {}
+        for source in screen["sources"]:
+            per[source] = {"layers": [None if at(source, L) is None else _bootstrap(at(source, L)) for L in layers],
+                           "all": None if at(source, ALL) is None else _bootstrap(at(source, ALL))}
+
+        def contrast(layer):
+            s, cs = at(swap, layer), [at(c, layer) for c in out["controls"]]
+            if s is None or not cs or any(c is None for c in cs):
+                return None
+            return _bootstrap(s - np.mean(cs, axis=0))
+
+        out[margin] = {"n": len(ds), "sources": per, "contrast": {"layers": [contrast(L) for L in layers], "all": contrast(ALL)}}
+    return out
+
+
+def patched_replays(rows: list[dict], plan: dict, lang: str, swap: str, controls: Sequence[str], out: Path, name: str,
+                    turn_cap: int = 12) -> dict:
+    """One arm's patched replays (`patched.py` rows, in the plan's settings): per setting, the
+    replays that ended right and harmful, the change against the unpatched replays, and the
+    change against the controls at the best layer (the layer most settings patch), their
+    replays pooled per decision; both paired by decision with 95% bootstrap intervals (d_* and
+    r_*, as `_paired_change` gives them). Writes <name>/<j>.json per decision, every setting's
+    replays there, as `steered` does."""
+    by: dict = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        outcome, note = r.get("outcome"), None
+        if outcome is not None and sum(m.get("role") == "assistant" for m in r.get("transcript", [])) > turn_cap:
+            outcome, note = 0.0, f"not finished within {turn_cap} turns"
+        by[r["setting"]][f"{r['task_id']}@{r['turn']}"].append(
+            {"sample": r["sample"], "outcome": outcome, "error": r.get("error"), "note": note, "usable": True,
+             "transcript": [_trim(m) for m in r.get("transcript", [])]}
+        )
+    settings = plan["settings"]
+    names = [s["name"] for s in settings]
+    decisions = [f"{d['task_id']}@{d['turn']}" for d in plan["decisions"]]
+    folder = out / name
+    folder.mkdir(exist_ok=True)
+    for j, dk in enumerate(decisions):
+        _dump(folder / f"{j}.json", {"decision": dk, "results": {n: by[n][dk] for n in names if dk in by.get(n, {})}})
+    single = [s["layers"][0] for s in settings if s.get("layers") and len(s["layers"]) == 1]
+    best = Counter(single).most_common(1)[0][0] if single else None
+    control_names = [s["name"] for s in settings if s.get("source") in controls and s.get("layers") == [best]]
+    pooled: dict = defaultdict(list)
+    for c in control_names:
+        for dk, xs in by.get(c, {}).items():
+            pooled[dk] += xs
+    base = by.get("unpatched", {})
+    summary = {}
+    for s in settings:
+        xs = [x for v in by.get(s["name"], {}).values() for x in v]
+        outs = [x["outcome"] for x in xs if x["outcome"] is not None]
+        cell = {"source": s.get("source"), "layers": s.get("layers"), "n": len(outs), "right": sum(o == 1 for o in outs),
+                "harmful": sum(o == -1 for o in outs), "errors": sum(1 for x in xs if x["error"]), "unfinished": sum(1 for x in xs if x["note"])}
+        if s["name"] != "unpatched":
+            cell |= _paired_change(base, by.get(s["name"], {}), lang)
+        if pooled and s["name"] not in control_names:
+            cell |= _paired_change(pooled, by.get(s["name"], {}), lang, prefix="r")
+            cell["controls"] = control_names
+        summary[s["name"]] = cell
+    return {"settings": names, "summary": summary, "decisions": decisions, "folder": name, "samples": plan.get("samples"),
+            "turn_cap": turn_cap, "best": best, "swap": swap, "controls": list(controls)}
+
+
+def patched(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
+    """Request-end patching, per arm (`ARMS`): the margin screen and the patched replays; arms
+    with neither are left out, a model with no arm gives None."""
+    arms = {}
+    for arm, meta in ARMS.items():
+        screen = _read(runs / PATCH["screen"].format(key=key, arm=arm))
+        path = runs / PATCH["replays"].format(key=key, arm=arm)
+        plan = _read(runs / PATCH["plan"].format(key=key, arm=arm))
+        replays = None
+        if path.exists() and plan:
+            rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+            replays = patched_replays(rows, plan, meta["language"], meta["swap"], meta["controls"], out, f"patched-{key}-{arm}", turn_cap)
+        if not screen and not replays:
+            continue
+        arms[arm] = {"language": meta["language"], "screen": patch_screen(screen, meta["swap"], meta["controls"]) if screen else None,
+                     "replays": replays}
+    return arms or None
 
 
 def sweep(runs: Path, key: str) -> dict | None:
@@ -600,6 +738,7 @@ def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
         model["steered"] = steered(runs, key, out)
         model["steered_lowdose"] = steered(runs, f"{key}-lowdose", out)
         model["sweep"] = sweep(runs, key)
+        model["patched"] = patched(runs, key, out)
         full = runs / SOURCES["steering"].format(key=key)
         if full.exists():
             model["steering"] = pack_steering(full, (npz / meta["name"]) if npz else None, traces_of(runs, key), out, key)
