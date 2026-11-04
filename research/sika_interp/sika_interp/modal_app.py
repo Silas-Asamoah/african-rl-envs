@@ -625,14 +625,12 @@ class Model:
         """For a patching item: the decision's prompt, where its request ends, how many
         template tokens follow that it shares with the first-turn prompt and with every
         source's prompt, and each source's (prompt, request end)."""
-        from sika_interp.patching import shared_prefix, template_span
+        from sika_interp.patching import align
 
         d = item["decision"]
-        prompt, end = self.request_end(d["messages"], d["tools"])
+        prompt = self.render(d["messages"], d["tools"])[0].tolist()
         rendered = {name: self.request_end(msgs, d["tools"]) for name, msgs in item["sources"].items()}
-        k = template_span(prompt, *rendered["own"])
-        for ids, e in rendered.values():
-            k = min(k, shared_prefix(prompt[end : end + k], ids[e : e + k]))
+        end, k = align(prompt, rendered)
         return prompt, end, k, rendered
 
     @modal.method()
@@ -2220,14 +2218,17 @@ def patch_all(
     limit: int = 0,
     out: str = "",
     skip: str = "",
+    retry: str = "",
 ):
     """`patch_moves` over one arm of `patching.arms` (primary: failed Twi–English decisions
     whose English twin succeeded; twi: the same for Twi; reverse: the English twins receiving
     the Twi–English state), from the first-move decisions of `model` in `traces` (every seed
     unless `seeds` lists some). `per` decisions go to each container; `limit` keeps that many
     decisions spread over the arm, for a pilot; `skip` (a text file of saved array names)
-    leaves out decisions already done. Saves a JSON of every decision's margins and shifts
-    locally and prints the per-layer contrast and the layer choice on even seeds."""
+    leaves out decisions already done; `retry` (a previous output JSON) reruns only its
+    decisions that errored and merges them back into it. Saves a JSON of every decision's
+    margins and shifts locally and prints the per-layer contrast and the layer choice on even
+    seeds."""
     import time
 
     from sika_interp.decisions import collect
@@ -2238,6 +2239,12 @@ def patch_all(
     built = arms(collect(traces.split(","), model, wanted))
     items = built[arm]
     print(f"{model}: {len(items)} decisions in the {arm} arm; dropped {len(built['dropped'])}")
+    previous = None
+    if retry:
+        previous = json.loads(Path(retry).read_text())
+        failed = {r["task_id"] for r in previous["decisions"] if "error" in r}
+        items = [i for i in items if i["decision"]["task_id"] in failed]
+        print(f"retrying {len(items)} decisions that errored")
     if skip:
         done = set(Path(skip).read_text().split())
         items = [i for i in items if f"{i['decision']['task_id'].replace('/', '_')}_{arm}.npz" not in done]
@@ -2257,9 +2264,12 @@ def patch_all(
     grid = next(r.pop("rows") for r in rows if "rows" in r)
     for r in rows:
         r.pop("rows", None)
+    if previous is not None:
+        redone = {r["task_id"]: r for r in rows}
+        rows = [redone.get(r["task_id"], r) for r in previous["decisions"]]
     result = {"model": model, "run": run, "arm": arm, "sources": list(sources), "swap": items[0]["swap"], "rows": grid,
               "dropped": built["dropped"], "decisions": rows}
-    path = Path(out or f"patch-{run}-{model.split('/')[-1]}-{arm}.json")
+    path = Path(out or (retry if retry else f"patch-{run}-{model.split('/')[-1]}-{arm}.json"))
     path.write_text(json.dumps(result))
     ok_rows = [r for r in rows if "error" not in r]
     seconds = [r["seconds"] for r in rows]

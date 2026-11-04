@@ -67,6 +67,19 @@ def template_span(prompt: Sequence[int], turn0: Sequence[int], user_end: int) ->
     return shared_prefix(prompt[user_end:], turn0[user_end:])
 
 
+def align(prompt: Sequence[int], rendered: dict[str, tuple[Sequence[int], int]]) -> tuple[int, int]:
+    """Where to patch a decision's prompt: the end of its request and how many template
+    tokens follow it that every source's prompt shares. The end is taken from the decision's
+    own first-turn render (`rendered["own"]`), which the prompt must start with; searching
+    the prompt itself can land on a later echo of the request (a model turn that repeats
+    it), after which no template tokens follow."""
+    own, end = rendered["own"]
+    k = template_span(prompt, own, end)
+    for ids, e in rendered.values():
+        k = min(k, shared_prefix(prompt[end : end + k], ids[e : e + k]))
+    return end, k
+
+
 def other_seed(candidates: Iterable[dict], seed: int) -> dict | None:
     """The candidate with the smallest seed above `seed`, else the smallest seed of all."""
     others = sorted((c for c in candidates if c["seed"] != seed), key=lambda c: c["seed"])

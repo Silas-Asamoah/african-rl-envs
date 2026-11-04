@@ -156,3 +156,17 @@ def test_replay_plan_lists_decisions_and_settings_in_order():
     assert "folder" not in plan["settings"][0]
     reverse = replay_plan([{"arm": "reverse", "swap": "en-tw", "decision": {"task_id": "eval/f/en/0", "index": 0}}], "/r", [14], 14)
     assert [s["name"] for s in reverse["settings"]] == ["unpatched", "own L14", "en-tw L14", "random L14"]
+
+
+def test_align_takes_the_request_end_from_the_first_turn_render():
+    from sika_interp.patching import align
+
+    req, tpl = [5, 6, 7], [90, 91, 92]
+    own = [1, 2] + req + tpl
+    # A later turn: the model echoed the request, then a call; the template after the echo differs.
+    prompt = own + [40, 41] + req + [55, 56]
+    twin = [1, 2, 8, 9, 7] + tpl
+    other = [1, 2, 8, 8] + tpl[:2] + [77]  # shares only two template tokens
+    assert align(prompt, {"own": (own, 5), "en": (twin, 5)}) == (5, 3)
+    assert align(prompt, {"own": (own, 5), "en": (twin, 5), "en_other": (other, 4)}) == (5, 2)
+    assert align([9] + own[1:], {"own": (own, 5)}) == (5, 0)  # the prompt doesn't start with the own render
