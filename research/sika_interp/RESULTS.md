@@ -6,7 +6,8 @@ Prime Intellect H200; each model's recommended sampling, reasoning on); activati
 recorded on Modal from the same weights, and every turn re-renders to the exact prompt length
 the server reported. Run 2026-10-26/27; word-level, masking, receiver-head, attention-blocking
 and steering results re-run on 2026-10-27 after a word-tagger fix (product names such as
-"solar kit" were unplaced; 94 of 9,579 Twi–English words changed).
+"solar kit" were unplaced; 94 of 9,579 Twi–English words changed). Request-end patching run on
+2026-11-04.
 
 Twi and Twi–English text quoted here is synthetic or model-written. A Twi reader checked a
 sample of the word tags and the Twi shown in the viewer.
@@ -103,6 +104,18 @@ tool calls and are left out. Our self-hosted Qwen reproduces its published hoste
    attention to a step (every head of every full-attention layer) agrees with deleting it:
    for Ministral, the turn that initiates the transfer moves the next turn by KL 1.5–1.8 in
    every Twi and Twi–English episode against at most 0.82 for any link in English.
+
+11. **The state at the end of the request does not carry Qwen's Twi–English failures.** Finding
+   6 read at reading time; patching tests it. With the residual stream at the template tokens
+   after the request set to the English twin's state, at one layer, the right move's log-odds
+   at Qwen's 113 failing Twi–English first moves rise over the random and other-English
+   controls by 0.10 nats at layer 15 (95% CI 0.06 to 0.16), and another seed's English request
+   does exactly as much as the twin. Replayed with the patch held through the episode, the
+   twin's state at layer 15 ends 22% of episodes right against 20% unpatched (+2.0 points,
+   −1.8 to +6.2) and 2.4 points more than the pooled controls (−0.7 to +5.6); for Twi
+   decisions +2.0 against unpatched and +3.1 against the controls (0.0 to +6.6), the random
+   control falling as much as the swap rises. Ministral's screen is flat, and the Twi–English
+   state set into English decisions never lowers the right margin beyond random.
 
 ## Steering at every decision
 
@@ -218,10 +231,69 @@ doses that leave Qwen working, a single layer-19 neuron pushed for a whole episo
 change outcomes beyond a random push, in Twi–English, Twi or English. The transcripts for
 every replay are in the viewer.
 
+## Patching the request-end state
+
+Finding 6 is a correlation read at the end of the request. To test whether that state carries
+the failure, the residual stream at the template tokens that follow the request (Qwen: the
+seven tokens `<|im_end|>\n<|im_start|>assistant\n<think>\n`; Ministral: `[/INST]`) was set,
+after one layer, to the state another prompt gives those tokens, and the decision's move read
+again through the batched route (`modal_app.Patches`). Sources: the English twin's state (the
+swap), halfway to it, a random vector as far from the decision's own state as the twin's is,
+another seed's English request, and the Twi twin's (for Twi decisions, the Twi–English twin's);
+a reverse arm sets the Twi–English twin's state into English decisions. The primary decisions
+are the first moves the model got wrong (not right, or harmful) in matched Twi–English episodes
+whose English twin it got right (113 for Qwen, 150 for Ministral); the Twi arm is the Twi first
+moves it got wrong whose English twin it got right (223 Qwen); the reverse arm is the English
+twins of the primary decisions (113). The screen patches each layer
+in turn and all at once; the layers replayed were chosen on even seeds by the swap's shift
+minus the controls', and the odd seeds hold (Qwen: layers 14 and 15 for Twi–English, 9 for Twi).
+
+On the screen every source lowers Qwen's right margin at layers 1–18. For Twi–English
+decisions the English twin's state lowers it by 0.12 nats at layer 14 (95% CI −0.31 to +0.08),
+random by 0.31 and the Twi twin's by 0.34; set at every layer at once, by 0.33, 0.41 and 0.64.
+The swap minus the two controls pooled (random, the other English request) is +0.10 at layer 15
+(0.06 to 0.16), +0.09 at 14 and +0.04 at all layers (−0.03 to +0.10); against random alone
++0.19 (0.09 to 0.30). Another seed's English request does exactly as well as the twin (−0.125
+against −0.125 at layer 14). Twi decisions give the same order, graded by how English the
+source is: the English twin −0.27, halfway −0.39, the Twi–English twin −0.46, random −0.52 at
+layer 14; the contrast +0.12 (0.06 to 0.19), +0.19 (0.12 to 0.26) at all layers. The reverse
+arm finds no harm in the Twi–English state: into English decisions it moves the right margin by
++0.01 at layer 14 (−0.21 to +0.22) against random's −0.14, and the contrast's interval includes
+zero at every layer. Ministral is flat: every source within ±0.07 of no change at every layer,
+the contrast +0.02 (−0.01 to +0.06).
+
+Replayed with the patch held at every model turn (vLLM on a Modal H200, the patch applied
+through the same worker extension as steering; 4 replays per decision, 12-turn cap; 3,616
+Twi–English and 4,032 Twi replays, none broken or unfinished), the patched episodes end much as
+the unpatched ones. Unpatched, 20% of the Twi–English decisions' replays end right and 1%
+harmful (the originals: 111 not right, 2 harmful). The English twin's state at layer 15 ends 22%
+right, +2.0 points (−1.8 to +6.2) paired by decision; at layer 14, 23%, +2.9 (−0.9 to +7.1);
+the decision's own state +1.1, halfway +1.6, random +0.7, the other English request −1.6, the
+Twi twin's 0.0; harmful stays within ±0.5 points everywhere. The pre-registered contrast, the
+swap at layer 15 minus the pooled controls at 15, is +2.4 points (−0.7 to +5.6). 48 of the 113
+decisions never end right in any of their 32 replays. Twi decisions: 16% right and 5% harmful
+unpatched; the English twin's state at layer 9 +2.0 (−1.6 to +5.8), the Twi–English twin's
++1.3, the other English request +0.4, halfway −1.1, own −1.6, random −2.7 (−6.0 to +0.7); the
+contrast +3.1 (0.0 to +6.6), carried by the random control's fall; the twin's state against the
+other English request's +1.6 (−2.2 to +5.6). At the end of the request, then, Qwen's state tells
+English from Twi to the tune of about two points of success on a sixteen- to twenty-point
+base, whichever English request supplies it, and random noise of the same size costs about as
+much; whatever makes these episodes fail is not carried by that state. The reverse arm's and
+Ministral's replays were not run (its screen is a null). The screen and every replay's
+transcript are in the viewer.
+
 ## Methods and caveats
 
-- Steered replays stop after 12 model turns from the decision; a replay that needed more counts
-  as not finished. Replays whose tool call the server rejected (malformed under the push)
+- Steered and patched replays stop after 12 model turns from the decision; a replay that
+  needed more counts as not finished.
+- Patching: shifts are read through the batched route and checked against a zero patch
+  through the same route; decisions whose tail after the request exceeded 2,500 tokens were
+  skipped (2 of Qwen's primary, 6 of its reverse arm), and a few more have no right margin
+  read (2 primary, 6 Twi, 2 reverse). Harm margins exist only where the task names a
+  harmful move. The replay hook matches the request's tokens whole and the template tokens
+  as far as the chat template keeps them (Qwen drops `<think>` from earlier turns once a user
+  reply follows), so later turns of a replay are patched too; it matched every replay.
+  Intervals are bootstraps over decisions (2,000 on the screen, 4,000 for replays). Replays whose tool call the server rejected (malformed under the push)
   count as not right.
 - Steering decisions cover 10 of the 30 matched seeds. Six Ministral decisions are flagged:
   there the batched route sat 0.26–0.48 nats from the plain pass on moves with at least 0.7%
