@@ -167,6 +167,24 @@ def swap_minus_controls(rows: Sequence[tuple[str, int]], decisions: Sequence[dic
     return out
 
 
+def replay_plan(items: Sequence[dict], folder: str, layers: Sequence[int], best: int, samples: int = 4, every: int = 1) -> dict:
+    """The replay plan for one arm (`patched.py`): its decisions (every `every`-th item), and
+    the settings in order: unpatched; the decision's own state at `best` (a no-op check);
+    the swap at each of `layers`; then at `best` each of the arm's other sources (half,
+    random, en_other and tw for the primary and Twi arms; random for the reverse arm)."""
+    swap = items[0]["swap"]
+    others = ("random",) if swap == "en-tw" else ("half", "random", "en_other", "tw")
+    settings = [{"name": "unpatched"}, {"name": f"own L{best}", "folder": folder, "source": "own", "layers": [best]}]
+    settings += [{"name": f"{swap} L{layer}", "folder": folder, "source": swap, "layers": [int(layer)]} for layer in layers]
+    settings += [{"name": f"{source} L{best}", "folder": folder, "source": source, "layers": [best]} for source in others]
+    return {
+        "arm": items[0]["arm"],
+        "decisions": [{"task_id": i["decision"]["task_id"], "turn": i["decision"]["index"]} for i in items[::every]],
+        "settings": settings,
+        "samples": samples,
+    }
+
+
 def choose_layers(rows: Sequence[tuple[str, int]], decisions: Sequence[dict], swap: str, controls: Sequence[str],
                   n: int = 2, margin: str = "right") -> dict:
     """The `n` single layers with the largest swap-minus-controls shift on even seeds, and the

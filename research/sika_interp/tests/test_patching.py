@@ -138,3 +138,21 @@ def test_layer_summaries_and_choice_on_even_seeds():
 def test_decisions_without_a_margin_are_left_out_of_the_means():
     rows = conditions(1, ("en",))
     assert by_layer(rows, [{"seed": 0}, _scored(1, [0.5, 0.7])]) == {"en:0": 0.5, "en:all": 0.7}
+
+
+def test_replay_plan_lists_decisions_and_settings_in_order():
+    from sika_interp.patching import replay_plan
+
+    items = [
+        {"arm": "primary", "swap": "en", "decision": {"task_id": "eval/f/en-tw/0", "index": 2}},
+        {"arm": "primary", "swap": "en", "decision": {"task_id": "eval/f/en-tw/1", "index": 0}},
+        {"arm": "primary", "swap": "en", "decision": {"task_id": "eval/f/en-tw/2", "index": 1}},
+    ]
+    plan = replay_plan(items, "/specs", [14, 15], best=15, samples=3, every=2)
+    assert plan["arm"] == "primary" and plan["samples"] == 3
+    assert plan["decisions"] == [{"task_id": "eval/f/en-tw/0", "turn": 2}, {"task_id": "eval/f/en-tw/2", "turn": 1}]
+    assert [s["name"] for s in plan["settings"]] == ["unpatched", "own L15", "en L14", "en L15", "half L15", "random L15", "en_other L15", "tw L15"]
+    assert plan["settings"][2] == {"name": "en L14", "folder": "/specs", "source": "en", "layers": [14]}
+    assert "folder" not in plan["settings"][0]
+    reverse = replay_plan([{"arm": "reverse", "swap": "en-tw", "decision": {"task_id": "eval/f/en/0", "index": 0}}], "/r", [14], 14)
+    assert [s["name"] for s in reverse["settings"]] == ["unpatched", "own L14", "en-tw L14", "random L14"]
