@@ -740,7 +740,17 @@ class Model:
                     else:
                         checks[way] = at.check(way)
                     checks["noop"] = at.noop(way)
-                    effects, zero = at.run(way, rows)
+                    for attempt in range(4):
+                        try:
+                            effects, zero = at.run(way, rows)
+                            break
+                        except torch.cuda.OutOfMemoryError:
+                            # Halve the batch and go again, rather than lose the decision.
+                            torch.cuda.empty_cache()
+                            at.cap = max(1, at.batch(way) // 2)
+                            row["oom_retries"] = attempt + 1
+                    else:
+                        raise RuntimeError("out of memory at every batch size tried")
                     effects, zero = effects.numpy(), zero.numpy()
                 row |= at.summary(effects, zero)
                 name = f"{d['task_id'].replace('/', '_')}_{item['arm']}.npz"
@@ -1443,14 +1453,19 @@ class Patches(Pushes):
         return {i: (torch.tensor(slots, device="cuda"), torch.stack(values)) for i, (slots, values) in per.items()}
 
     def batch(self, way: str) -> int:
-        """`cap` slots for a tail up to 700 tokens, halving as the tail doubles (every slot
-        carries the whole tail through the model)."""
-        cap = self.cap
-        for limit in (700, 1400, 2800):
-            if self.S <= limit:
-                break
-            cap = max(4, cap // 2)
-        return min(cap, super().batch(way))
+        """Slots per pass, at most `cap`: as `Pushes.batch`, but every copy of the cache grows
+        by the tail (S tokens on top of the L cached), and the tail pass holds each slot's
+        activations; a model with full attention in every layer (Ministral) has a cache
+        several times Qwen's per token, so this is what keeps it within memory."""
+        import torch
+
+        total = torch.cuda.get_device_properties(0).total_memory
+        free = total - torch.cuda.memory_allocated() - 20e9
+        per = sum(t.numel() * t.element_size() for _, _, t in _tensors(self.head) if t.dim() > 0 and t.shape[0] == 1)
+        per_copy = per * (1 + self.S / max(self.L, 1))
+        copies = 2 + 3 * max(self.K, 1) if self.flat_nodes else 4
+        activations = self.S * self.width * 2 * 12  # bf16 temporaries along the tail, per slot
+        return max(1, min(self.cap, int(free // (copies * max(per_copy, 1) + activations))))
 
     def pushed(self, way: str, chunk: list[tuple[str, int]], n: int):
         """[n, labels] move log-probabilities with the chunk's patches."""
