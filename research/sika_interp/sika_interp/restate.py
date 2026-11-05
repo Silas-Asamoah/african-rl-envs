@@ -13,8 +13,9 @@ reasoning before acting; outcomes are paired by task against the original run.
         --model Qwen/Qwen3.5-9B --base-url http://localhost:8000/v1 \\
         --config configs/qwen.toml --out restate-qwen.jsonl
     python -m sika_interp.restate summary restate-qwen.jsonl
-    python -m sika_interp.restate compare --original study-matched-qwen/traces.jsonl \\
-        --rerun study-restate-qwen/traces.jsonl
+    python -m sika_interp.restate compare --model Qwen/Qwen3.5-9B \\
+        --original study-matched-qwen/traces.jsonl study-more-twins-qwen/traces.jsonl \\
+        --rerun study-restate-matched-qwen/traces.jsonl study-restate-more-qwen/traces.jsonl
 
 The probe keeps the task's system prompt and request as they were and appends the
 instruction to the request, with no tools offered, so the model can only answer in text.
@@ -166,10 +167,12 @@ def requests_from(paths: list[str], model: str) -> list[dict]:
         for trace in load(path):
             if trace["agent"]["config"]["model"] != model:
                 continue
+            score = (trace.get("rewards") or {}).get("outcome", {}).get("score")
+            if score is None:  # an errored rollout
+                continue
             d = trace["task"]["data"]
             rows.append({"task_id": d["id"], "family": d["family"], "category": d["category"], "language": d["language"],
-                         "seed": d["seed"], "prompt": d["prompt"], "system_prompt": d["system_prompt"],
-                         "score": trace["rewards"]["outcome"]["score"]})
+                         "seed": d["seed"], "prompt": d["prompt"], "system_prompt": d["system_prompt"], "score": score})
     return rows
 
 
@@ -328,15 +331,19 @@ def rendering(reasoning: str | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def episodes_from(path: str | Path, model: str) -> dict[str, dict]:
-    """task id → outcome score, family, seed, language, prompt and the first turn's reasoning."""
+def episodes_from(paths: list[str | Path], model: str) -> dict[str, dict]:
+    """task id → outcome score, family, seed, language, prompt and the first turn's reasoning,
+    over several runs' traces; errored rollouts (no score) are left out."""
     out = {}
-    for trace in load(path):
+    for trace in (t for path in paths for t in load(path)):
         if trace["agent"]["config"]["model"] != model:
             continue
+        score = (trace.get("rewards") or {}).get("outcome", {}).get("score")
+        if score is None:
+            continue
         d = trace["task"]["data"]
-        first = turns(trace)
-        out[d["id"]] = {"score": trace["rewards"]["outcome"]["score"], "family": d["family"], "seed": d["seed"],
+        first = turns(trace) if trace.get("nodes") else []
+        out[d["id"]] = {"score": score, "family": d["family"], "seed": d["seed"],
                         "language": d["language"], "prompt": d["prompt"],
                         "reasoning": first[0].response.get("reasoning_content") if first else None}
     return out
@@ -404,8 +411,8 @@ def main() -> None:
     s.add_argument("rows")
     s.add_argument("--out", default="")
     c = sub.add_parser("compare", help="a translate-then-act rerun against the original run")
-    c.add_argument("--original", required=True)
-    c.add_argument("--rerun", required=True)
+    c.add_argument("--original", required=True, nargs="+", help="the study's trace files (matched and more-twins runs)")
+    c.add_argument("--rerun", required=True, nargs="+")
     c.add_argument("--model", required=True)
     c.add_argument("--out", default="")
     args = ap.parse_args()

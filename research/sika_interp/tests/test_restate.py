@@ -80,6 +80,22 @@ def test_summary_splits_failures_by_whether_the_request_was_understood():
     assert abs(s["languages"]["tw"]["not_right_given_understood"][0] - 2 / 3) < 1e-9
 
 
+def test_errored_rollouts_without_a_score_are_left_out(tmp_path):
+    from sika_interp.restate import episodes_from, requests_from
+
+    def trace(tid, score):
+        d = {"id": tid, "family": "send_money", "category": "payments", "language": "tw", "seed": 1, "prompt": "p", "system_prompt": "s"}
+        t = {"agent": {"config": {"model": "m"}}, "task": {"data": d}, "nodes": [], "calls": [], "rewards": {}}
+        if score is not None:
+            t["rewards"] = {"outcome": {"score": score}}
+        return t
+
+    path = tmp_path / "traces.jsonl"
+    path.write_text(json.dumps({"traces": [trace("eval/send_money/tw/1", 1.0), trace("eval/send_money/tw/2", None)]}) + "\n")
+    assert [r["task_id"] for r in requests_from([str(path)], "m")] == ["eval/send_money/tw/1"]
+    assert list(episodes_from([path], "m")) == ["eval/send_money/tw/1"]
+
+
 def test_rendering_is_read_from_the_reasoning_and_compare_pairs_runs_by_task():
     assert rendering("Let me think.\nIn English: Send GH₵10 to Ama on 0241234567.\n\nNow the tools.") == "Send GH₵10 to Ama on 0241234567."
     assert rendering("no rendering") is None
