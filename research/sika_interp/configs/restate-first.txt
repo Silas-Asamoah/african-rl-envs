@@ -1,0 +1,1 @@
+Before you act on any user message, first write a faithful English rendering of the whole message in your reasoning, starting with the words "In English:", then continue as usual.

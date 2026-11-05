@@ -1,0 +1,20 @@
+# Translate-then-act: Ministral 3 8B Reasoning through the proxy that appends
+# configs/restate-first.txt to the system prompt, with Mistral's reasoning prompt after it
+# (remote/pod.sh proxy ministral). Sampling as in ministral.toml.
+model = "mistralai/Ministral-3-8B-Reasoning-2512"
+
+[client]
+base_url = "http://localhost:8004/v1"
+api_key_var = "LOCAL_KEY"
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_tokens = 16384
+
+[env.taskset]
+matched = true
+
+# The harness is a plain tool-calling loop, so it runs on the pod rather than in a sandbox.
+[env.agent.runtime]
+type = "subprocess"

@@ -9,6 +9,10 @@ render prompts, so both see identical tokens.
 
 Qwen3.5 needs no adapter: its chat template opens a thinking block itself.
 
+`--system-append FILE` adds the file's text to the end of every system prompt (before Mistral's
+reasoning prompt), for runs that change one instruction and nothing else; with it the proxy can
+also front Qwen, without a reasoning prompt.
+
     python -m sika_interp.serving --upstream http://localhost:8001 --port 8002 \\
         --reasoning-prompt SYSTEM_PROMPT.txt
 """
@@ -49,9 +53,25 @@ def for_ministral(messages: list[dict], reasoning_prompt: str) -> list[dict]:
     return out
 
 
-def proxy(upstream: str, reasoning_prompt: str):
+def append_system(messages: list[dict], text: str) -> list[dict]:
+    """A copy of `messages` with `text` at the end of the system message (after a blank line
+    for a string, as a text part for a list of parts), or as a new system message first."""
+    out = copy.deepcopy(messages)
+    for message in out:
+        if message["role"] == "system":
+            content = message.get("content")
+            if isinstance(content, list):
+                content.append({"type": "text", "text": text})
+            else:
+                message["content"] = (content or "").rstrip() + "\n\n" + text
+            return out
+    out.insert(0, {"role": "system", "content": text})
+    return out
+
+
+def proxy(upstream: str, reasoning_prompt: str | None = None, system_append: str | None = None):
     """An app that forwards OpenAI requests to `upstream`, rewriting chat requests with
-    `for_ministral` and streaming responses back unchanged."""
+    `append_system` and `for_ministral` as configured, and streaming responses back unchanged."""
     import httpx
     from fastapi import FastAPI, Request
     from fastapi.responses import Response, StreamingResponse
@@ -63,7 +83,10 @@ def proxy(upstream: str, reasoning_prompt: str):
     async def forward(path: str, request: Request):
         body = await request.json() if request.method == "POST" else None
         if body is not None and path.endswith("chat/completions"):
-            body["messages"] = for_ministral(body["messages"], reasoning_prompt)
+            if system_append:
+                body["messages"] = append_system(body["messages"], system_append)
+            if reasoning_prompt:
+                body["messages"] = for_ministral(body["messages"], reasoning_prompt)
         upstream_request = client.build_request(request.method, "/" + path, json=body)
         response = await client.send(upstream_request, stream=True)
         if "text/event-stream" in response.headers.get("content-type", ""):
@@ -78,9 +101,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--upstream", required=True)
     ap.add_argument("--port", type=int, default=8002)
-    ap.add_argument("--reasoning-prompt", required=True, help="Mistral's SYSTEM_PROMPT.txt")
+    ap.add_argument("--reasoning-prompt", default="", help="Mistral's SYSTEM_PROMPT.txt (Ministral only)")
+    ap.add_argument("--system-append", default="", help="a file whose text goes at the end of every system prompt")
     args = ap.parse_args()
     import uvicorn
 
-    with open(args.reasoning_prompt, encoding="utf-8") as f:
-        uvicorn.run(proxy(args.upstream, f.read()), host="127.0.0.1", port=args.port, log_level="warning")
+    read = lambda path: open(path, encoding="utf-8").read().strip() if path else None  # noqa: E731
+    uvicorn.run(proxy(args.upstream, read(args.reasoning_prompt), read(args.system_append)), host="127.0.0.1", port=args.port, log_level="warning")

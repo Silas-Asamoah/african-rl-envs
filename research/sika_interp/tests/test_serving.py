@@ -1,6 +1,6 @@
 import pytest
 
-from sika_interp.serving import for_ministral, reasoning_system_parts
+from sika_interp.serving import append_system, for_ministral, reasoning_system_parts
 
 PROMPT = "# HOW YOU SHOULD THINK\n\nUse this template:[THINK]Your scratch work.[/THINK]Then answer."
 CONVERSATION = [
@@ -36,3 +36,15 @@ def test_the_input_is_not_modified():
 def test_a_prompt_without_the_template_is_refused():
     with pytest.raises(ValueError):
         reasoning_system_parts("You are Sika.", "No template here.")
+
+
+def test_a_line_is_appended_to_the_system_prompt_and_sits_before_the_reasoning_prompt():
+    messages = [{"role": "system", "content": "You are Sika."}, {"role": "user", "content": "hi"}]
+    out = append_system(messages, "First render the message in English.")
+    assert out[0]["content"] == "You are Sika.\n\nFirst render the message in English."
+    assert messages[0]["content"] == "You are Sika."
+    parts = for_ministral(out, "Think first.[THINK]example[/THINK]After.")[0]["content"]
+    assert parts[0]["text"].startswith("You are Sika.\n\nFirst render the message in English.")
+    assert append_system([{"role": "user", "content": "hi"}], "Line.")[0] == {"role": "system", "content": "Line."}
+    listed = append_system([{"role": "system", "content": [{"type": "text", "text": "A"}]}], "B")
+    assert listed[0]["content"][-1] == {"type": "text", "text": "B"}
