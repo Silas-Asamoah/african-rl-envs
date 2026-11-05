@@ -196,10 +196,7 @@ async def probe(args) -> None:
         rows = rows[: args.limit]
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    done = set()
-    if out.exists():
-        for line in out.read_text(encoding="utf-8").splitlines():
-            done.add(json.loads(line)["task_id"])
+    done = done_ids(out, args.retry_empty)
     todo = [r for r in rows if r["task_id"] not in done]
     sampling = sampling_from(args.config, args.max_tokens)
     llm = AsyncOpenAI(base_url=args.base_url, api_key="EMPTY", timeout=1800)
@@ -213,9 +210,13 @@ async def probe(args) -> None:
         async with gate:
             try:
                 resp = await llm.chat.completions.create(model=args.model, messages=messages, **sampling)
-                msg = resp.choices[0].message
+                choice = resp.choices[0]
+                msg = choice.message
                 row["content"] = msg.content
                 row["reasoning"] = getattr(msg, "reasoning_content", None) or (msg.model_extra or {}).get("reasoning_content")
+                row["finish"] = choice.finish_reason
+                row["tool_calls"] = [{"name": c.function.name, "arguments": c.function.arguments} for c in (msg.tool_calls or [])]
+                row["tokens"] = resp.usage.completion_tokens if resp.usage else None
             except Exception as e:  # noqa: BLE001 - one failed call shouldn't stop the probe
                 row["error"] = f"{type(e).__name__}: {e}"[:300]
                 row["content"] = None
@@ -227,6 +228,30 @@ async def probe(args) -> None:
     rows = await asyncio.gather(*(one(r) for r in todo))
     print(f"  done: {sum(r['grade']['understood'] for r in rows)} understood of {len(rows)}, "
           f"{sum('error' in r for r in rows)} errors", flush=True)
+
+
+def done_ids(path: Path, retry_empty: bool = False) -> set[str]:
+    """The task ids already in a probe's output; with `retry_empty`, rows whose reply was empty
+    or errored count as not done, so a rerun asks them again (the rerun appends, and the
+    summary keeps a task's last row)."""
+    done = set()
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if retry_empty and ("error" in r or not (r.get("content") or "").strip()):
+                continue
+            done.add(r["task_id"])
+    return done
+
+
+def last_rows(rows: list[dict]) -> list[dict]:
+    """One row per task, the last written."""
+    by = {}
+    for r in rows:
+        by[r["task_id"]] = r
+    return list(by.values())
 
 
 def bootstrap(groups: dict, stat, boot: int = 2000, seed: int = 0) -> list[float] | None:
@@ -264,6 +289,7 @@ def summary(rows: list[dict], boot: int = 2000, seed: int = 0) -> dict:
     (`understood`). Then the failures: for Twi and Twi–English episodes that ended not right
     while the English twin ended right, the share understood; and per language the share
     ending not right given understood and given not, with the difference."""
+    rows = last_rows(rows)
     by_task = {r["task_id"]: r for r in rows}
     triple = lambda r: (r["family"], r["seed"])  # noqa: E731
 
@@ -279,7 +305,9 @@ def summary(rows: list[dict], boot: int = 2000, seed: int = 0) -> dict:
         if not rs:
             continue
         g = groups(rs)
-        out["languages"][lang] = {"n": len(rs), "errors": sum("error" in r for r in rs)}
+        out["languages"][lang] = {"n": len(rs), "errors": sum("error" in r for r in rs),
+                                  "empty": sum(not (r.get("content") or "").strip() for r in rs),
+                                  "acted": sum(bool(r.get("tool_calls")) for r in rs)}
         for k in ("parsed", "action_ok", "amounts_ok", "phones_ok", "trick_ok", "understood"):
             out["languages"][lang][k] = bootstrap(g, lambda xs, k=k: _rate(xs, lambda r: r["grade"][k]), boot, seed)
         out["languages"][lang]["not_right"] = bootstrap(g, lambda xs: _rate(xs, lambda r: r["score"] != 1), boot, seed)
@@ -409,6 +437,7 @@ def main() -> None:
     p.add_argument("--max-tokens", type=int, default=4096)
     p.add_argument("--concurrency", type=int, default=64)
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--retry-empty", action="store_true", help="ask again where the reply was empty or errored")
     s = sub.add_parser("summary", help="rates and the failure split of a probe's rows")
     s.add_argument("rows")
     s.add_argument("--out", default="")

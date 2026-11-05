@@ -112,3 +112,16 @@ def test_rendering_is_read_from_the_reasoning_and_compare_pairs_runs_by_task():
     assert tw["gap"] == 0.5 and tw["gap_closed"] == 1.0
     assert tw["rendered"][0] == 1.0 and tw["rendered_faithful"][0] == 1.0
     assert c["languages"]["en"]["d_right"][0] == 0.0
+
+
+def test_done_ids_skip_empty_or_errored_rows_only_on_request_and_summary_keeps_the_last_row(tmp_path):
+    from sika_interp.restate import done_ids, last_rows
+
+    path = tmp_path / "rows.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        {"task_id": "a", "content": "{}"}, {"task_id": "b", "content": ""}, {"task_id": "c", "error": "boom", "content": None}]) + "\n")
+    assert done_ids(path) == {"a", "b", "c"}
+    assert done_ids(path, retry_empty=True) == {"a"}
+    assert done_ids(tmp_path / "missing.jsonl", retry_empty=True) == set()
+    rows = [{"task_id": "a", "v": 1}, {"task_id": "b", "v": 1}, {"task_id": "a", "v": 2}]
+    assert sorted((r["task_id"], r["v"]) for r in last_rows(rows)) == [("a", 2), ("b", 1)]
