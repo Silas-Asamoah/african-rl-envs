@@ -30,7 +30,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     # The pod's install: vLLM's CUDA 12.9 wheel with the matching torch, and the prebuilt
     # kernels, which vLLM picks for the GPU it sees (so that step runs on one).
-    .uv_pip_install(f"vllm @ {VLLM_WHEEL}", "mistral-common>=1.8.6", "ninja", "httpx", extra_options="--torch-backend=cu129")
+    .uv_pip_install(f"vllm @ {VLLM_WHEEL}", "mistral-common>=1.8.6,<1.13", "ninja", "httpx", extra_options="--torch-backend=cu129")
     .run_commands("vllm download-kernels", gpu="H100")
     .env({"HF_HOME": "/cache/hf", "VLLM_SERVER_DEV_MODE": "1"})
     .add_local_dir(ENV, "/opt/sika_agent", copy=True, ignore=[".venv", "dist", "outputs", "**/__pycache__", "scripts/.cache"])

@@ -37,7 +37,7 @@ case "${1:-}" in
 setup)
   command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
   uv venv -q "$VENVS/vllm" --python 3.12
-  uv pip install -q -p "$VENVS/vllm/bin/python" --torch-backend=cu129 "vllm @ $VLLM_WHEEL" "mistral-common>=1.8.6" ninja
+  uv pip install -q -p "$VENVS/vllm/bin/python" --torch-backend=cu129 "vllm @ $VLLM_WHEEL" "mistral-common>=1.8.6,<1.13" ninja
   # Prebuilt FlashInfer kernels: the pod's CUDA toolkit can't build ones that match.
   vllm download-kernels
   uv venv -q "$VENVS/client" --python 3.12
