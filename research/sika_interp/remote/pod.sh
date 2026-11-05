@@ -10,6 +10,10 @@
 #   bash research/sika_interp/remote/pod.sh resume <run>    # re-run its missing rollouts
 #   bash research/sika_interp/remote/pod.sh serve-steer qwen  # steerable server (steer_serve)
 #   bash research/sika_interp/remote/pod.sh steered qwen      # steered transcripts (traces/plan-qwen.json)
+#   bash research/sika_interp/remote/pod.sh pin                # the environment as the study played it (commit 612dc3e)
+#   bash research/sika_interp/remote/pod.sh restate qwen        # restatement probe over traces/study-matched-qwen
+#   bash research/sika_interp/remote/pod.sh proxy qwen && bash .../pod.sh wait qwen-restate   # system-prompt line in front
+#   bash research/sika_interp/remote/pod.sh study-restate qwen  # the matched study again, translate-then-act
 #
 # Traces land in outputs/, server logs in logs/.
 set -euo pipefail
@@ -27,7 +31,7 @@ MINISTRAL=mistralai/Ministral-3-8B-Reasoning-2512
 GPU_SHARE=${GPU_SHARE:-0.42}
 mkdir -p "$LOGS"
 log() { echo "[$(date +%T)] $*"; }
-port() { case "$1" in qwen) echo 8000 ;; ministral) echo 8002 ;; *) echo "unknown model $1" >&2; exit 2 ;; esac; }
+port() { case "$1" in qwen) echo 8000 ;; ministral) echo 8002 ;; qwen-restate) echo 8003 ;; ministral-restate) echo 8004 ;; *) echo "unknown model $1" >&2; exit 2 ;; esac; }
 
 case "${1:-}" in
 setup)
@@ -121,7 +125,7 @@ eval)
   name=${2:?eval qwen|ministral}
   shift 2
   logfile="$LOGS/eval-$name-$(date +%H%M%S)-$$.log"
-  LOCAL_KEY=EMPTY "$VENVS/client/bin/vf-eval" sika-agent @ "$HERE/configs/$name.toml" \
+  LOCAL_KEY=EMPTY "$VENVS/client/bin/vf-eval" sika-agent @ "${CONFIG:-$HERE/configs/$name.toml}" \
     --no-push --no-rich -o "$ROOT/outputs" "$@" > "$logfile" 2>&1
   log "eval $name done, log $logfile"
   ;;
@@ -154,6 +158,50 @@ study)
       --run.dir "study-more-twins-$name" < /dev/null > /dev/null 2>&1 &)
   fi
   log "study $name ($part) started"
+  ;;
+pin)
+  # The study's tasks as they were played: sika-agent 0.3.2 changed 40 matched wordings, so the
+  # environment is checked out at the study's commit before `setup` installs it.
+  git -C "$ROOT" checkout "${2:-612dc3e}" -- environments/sika_agent
+  log "environment pinned at ${2:-612dc3e}"
+  ;;
+proxy)
+  # A system-prompt line in front of a server (sika_interp.serving --system-append):
+  # qwen 8000 -> 8003; ministral 8001 -> 8004, with Mistral's reasoning prompt after the line.
+  name=${2:?proxy qwen|ministral [append file]}
+  append=${3:-$HERE/configs/restate-first.txt}
+  export PYTHONPATH="$HERE"
+  case "$name" in
+  qwen)
+    (cd "$HERE" && setsid nohup "$VENVS/vllm/bin/python" -m sika_interp.serving \
+      --upstream http://localhost:8000 --port 8003 --system-append "$append" \
+      > "$LOGS/qwen-restate-proxy.log" 2>&1 < /dev/null &)
+    ;;
+  ministral)
+    prompt=$("$VENVS/vllm/bin/python" -c "from huggingface_hub import hf_hub_download as d; print(d('$MINISTRAL', 'SYSTEM_PROMPT.txt'))")
+    (cd "$HERE" && setsid nohup "$VENVS/vllm/bin/python" -m sika_interp.serving \
+      --upstream http://localhost:8001 --port 8004 --reasoning-prompt "$prompt" --system-append "$append" \
+      > "$LOGS/ministral-restate-proxy.log" 2>&1 < /dev/null &)
+    ;;
+  *) echo "proxy qwen|ministral" >&2; exit 2 ;;
+  esac
+  log "$name proxy with $(basename "$append") starting"
+  ;;
+restate)
+  # The restatement probe (sika_interp.restate) over the study's matched episodes, in the background.
+  name=${2:?restate qwen|ministral}
+  case "$name" in qwen) model=Qwen/Qwen3.5-9B; base=8000 ;; ministral) model=$MINISTRAL; base=8002 ;; esac
+  (cd "$HERE" && setsid nohup "$VENVS/client/bin/python" -m sika_interp.restate probe \
+    --traces "$ROOT/traces/study-matched-$name/traces.jsonl" --model "$model" --base-url "http://localhost:$base/v1" \
+    --config "$HERE/configs/$name.toml" --out "$ROOT/outputs/restate-$name.jsonl" ${RESTATE_ARGS:-} \
+    > "$LOGS/restate-$name.log" 2>&1 < /dev/null &)
+  log "restate $name started"
+  ;;
+study-restate)
+  # The matched study again through the proxy (translate-then-act), in the background.
+  name=${2:?study-restate qwen|ministral}
+  (CONFIG="$HERE/configs/$name-restate.toml" setsid nohup bash "$0" eval "$name" --run.dir "study-restate-$name" < /dev/null > /dev/null 2>&1 &)
+  log "study-restate $name started"
   ;;
 *)
   sed -n '2,10p' "$0"; exit 2
