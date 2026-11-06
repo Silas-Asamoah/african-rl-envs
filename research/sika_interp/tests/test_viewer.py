@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from sika_interp.viewer import patch_screen, patched, patched_replays, steered, wording
 
@@ -136,3 +137,41 @@ def test_patched_collects_the_arms_that_have_a_screen_or_replays(tmp_path):
     assert got["primary"]["screen"] is None and got["primary"]["replays"]["summary"]["en L15"]["d_right"][0] == 0.5
     assert got["twi"]["replays"] is None and got["twi"]["screen"]["right"]["contrast"]["layers"][0][0] == 0.2
     assert patched(tmp_path, "m", tmp_path) is None
+
+
+def test_restated_summarises_the_probe_and_pairs_the_rerun_with_the_original(tmp_path):
+    from sika_interp.viewer import restated
+
+    def trace(tid, lang, score, reasoning=None):
+        d = {"id": tid, "family": "send_money", "category": "payments", "language": lang, "seed": int(tid[-1]), "prompt": "send GH₵10 to 0241234567", "system_prompt": "s"}
+        nodes = [{"message": {"role": "assistant", "content": "", "reasoning_content": reasoning}, "sampled": True, "parent": None}] if reasoning else []
+        return {"agent": {"config": {"model": "Qwen/Qwen3.5-9B"}}, "task": {"data": d}, "nodes": nodes, "calls": [], "tools": [],
+                "rewards": {"outcome": {"score": score}}}
+
+    def grade(ok):
+        return {"parsed": True, "action": "send_money", "action_ok": ok, "amounts_ok": True, "phones_ok": True, "trick": False, "trick_ok": True, "understood": ok}
+
+    (tmp_path / "restate" / "study-restate-matched-qwen").mkdir(parents=True)
+    (tmp_path / "study-matched-qwen").mkdir()
+    rows = []
+    for seed in range(4):
+        rows.append({"task_id": f"eval/send_money/en/100000{seed}", "family": "send_money", "category": "payments", "language": "en", "seed": seed,
+                     "prompt": "send GH₵10 to 0241234567", "score": 1.0, "content": '{"action": "send_money", "summary": "Send 10."}', "grade": grade(True)})
+        rows.append({"task_id": f"eval/send_money/tw/100000{seed}", "family": "send_money", "category": "payments", "language": "tw", "seed": seed,
+                     "prompt": "fa GH₵10 kɔma 0241234567", "score": 0.0 if seed < 2 else 1.0, "content": "" if seed == 0 else '{"action": "send_money", "summary": "Send 10."}',
+                     "grade": grade(seed != 0)})
+    (tmp_path / "restate" / "restate-qwen.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    orig = [trace(f"eval/send_money/{lang}/100000{seed}", lang, 1.0 if lang == "en" or seed >= 2 else 0.0) for seed in range(4) for lang in ("en", "tw")]
+    rerun = [trace(f"eval/send_money/{lang}/100000{seed}", lang, 1.0, "In English: Send GH₵10 to 0241234567.\n\nNow act.") for seed in range(3) for lang in ("en", "tw")]
+    (tmp_path / "study-matched-qwen" / "traces.jsonl").write_text(json.dumps({"traces": orig}) + "\n", encoding="utf-8")
+    (tmp_path / "restate" / "study-restate-matched-qwen" / "traces.jsonl").write_text(json.dumps({"traces": rerun}) + "\n", encoding="utf-8")
+    out = tmp_path / "site"; out.mkdir()
+    got = restated(tmp_path, "qwen", out)
+    assert got["probe"]["languages"]["tw"]["understood"][0] == 0.75 and got["probe"]["languages"]["tw"]["empty"] == 1
+    assert got["probe"]["failures"]["tw"]["n"] == 2 and got["probe"]["failures"]["tw"]["understood"][0] == 0.5
+    assert got["rerun"]["complete"] is False and got["rerun"]["tasks"] == 8 and got["rerun"]["n"] == 6
+    assert got["rerun"]["languages"]["tw"]["d_right"][0] == pytest.approx(2 / 3) and got["rerun"]["languages"]["tw"]["rendered"][0] == 1.0
+    data = json.loads((out / "restate-qwen.json").read_text(encoding="utf-8"))
+    assert len(data["requests"]) == 8 and data["requests"][0]["summary"] == "Send 10." and sum(r["empty"] for r in data["requests"]) == 1
+    assert len(data["pairs"]) == 6 and data["pairs"][0]["rendering"] == "Send GH₵10 to 0241234567."
+    assert restated(tmp_path, "ministral", out) is None

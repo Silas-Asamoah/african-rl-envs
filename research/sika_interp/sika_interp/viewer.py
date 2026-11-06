@@ -574,6 +574,48 @@ def patched_replays(rows: list[dict], plan: dict, lang: str, swap: str, controls
             "turn_cap": turn_cap, "best": best, "swap": swap, "controls": list(controls)}
 
 
+RESTATE = {
+    "rows": "restate/restate-{key}.jsonl",
+    "rerun": ("restate/study-restate-matched-{key}/traces.jsonl", "restate/study-restate-more-{key}/traces.jsonl"),
+    "original": ("study-matched-{key}/traces.jsonl", "study-more-twins-{key}/traces.jsonl"),
+}
+
+
+def restated(runs: Path, key: str, out: Path) -> dict | None:
+    """The comprehension-or-policy tests: the restatement probe (`restate.summary` over the
+    last row per request) and the translate-then-act rerun against the original run
+    (`restate.compare`, with whether the rerun covered every task), per language with
+    intervals. Every request's grade, restatement and summary sentence, and every paired
+    task's outcomes with the rerun's first-turn rendering, go to restate-<key>.json."""
+    from sika_interp.restate import compare, episodes_from, last_rows, parse_json, rendering, summary
+
+    path = runs / RESTATE["rows"].format(key=key)
+    if not path.exists():
+        return None
+    rows = last_rows([json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()])
+    requests = []
+    for r in sorted(rows, key=lambda r: r["task_id"]):
+        parsed = parse_json(r.get("content"))
+        requests.append({"task_id": r["task_id"], "family": r["family"], "category": r["category"], "language": r["language"],
+                         "seed": r["seed"], "score": r["score"], "grade": r["grade"], "restatement": parsed,
+                         "summary": (parsed or {}).get("summary") if isinstance(parsed, dict) else None,
+                         "empty": not (r.get("content") or "").strip(), "prompt": r["prompt"]})
+    result = {"probe": summary(rows), "rerun": None, "file": f"restate-{key}.json"}
+    pairs = []
+    rerun_paths = [runs / p.format(key=key) for p in RESTATE["rerun"] if (runs / p.format(key=key)).exists()]
+    if rerun_paths:
+        model = MODELS[key]["id"]
+        original = episodes_from([runs / p.format(key=key) for p in RESTATE["original"] if (runs / p.format(key=key)).exists()], model)
+        rerun = episodes_from(rerun_paths, model)
+        both = sorted(set(original) & set(rerun))
+        result["rerun"] = compare(original, rerun) | {"complete": len(both) == len(original), "tasks": len(original)}
+        for tid in both:
+            pairs.append({"task_id": tid, "language": original[tid]["language"], "family": original[tid]["family"], "seed": original[tid]["seed"],
+                          "original": original[tid]["score"], "rerun": rerun[tid]["score"], "rendering": rendering(rerun[tid]["reasoning"])})
+    _dump(out / f"restate-{key}.json", {"requests": requests, "pairs": pairs})
+    return result
+
+
 def patched(runs: Path, key: str, out: Path, turn_cap: int = 12) -> dict | None:
     """Request-end patching, per arm (`ARMS`): the margin screen and the patched replays; arms
     with neither are left out, a model with no arm gives None."""
@@ -739,6 +781,7 @@ def build(runs: Path, out: Path, npz: Path | None = None) -> dict:
         model["steered_lowdose"] = steered(runs, f"{key}-lowdose", out)
         model["sweep"] = sweep(runs, key)
         model["patched"] = patched(runs, key, out)
+        model["restated"] = restated(runs, key, out)
         full = runs / SOURCES["steering"].format(key=key)
         if full.exists():
             model["steering"] = pack_steering(full, (npz / meta["name"]) if npz else None, traces_of(runs, key), out, key)
