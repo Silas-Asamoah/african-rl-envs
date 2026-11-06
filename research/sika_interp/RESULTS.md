@@ -276,10 +276,16 @@ The swap minus the two controls pooled (random, the other English request) is +0
 +0.19 (0.09 to 0.30). Another seed's English request does exactly as well as the twin (−0.125
 against −0.125 at layer 14). Twi decisions give the same order, graded by how English the
 source is: the English twin −0.27, halfway −0.39, the Twi–English twin −0.46, random −0.52 at
-layer 14; the contrast +0.12 (0.06 to 0.19), +0.19 (0.12 to 0.26) at all layers. The reverse
-arm finds no harm in the Twi–English state: into English decisions it moves the right margin by
-+0.01 at layer 14 (−0.21 to +0.22) against random's −0.14, and the contrast's interval includes
-zero at every layer. Ministral's primary arm is flat: every source within ±0.07 of no change
+layer 14; the contrast there +0.12 (0.06 to 0.19), its largest +0.16 (0.10 to 0.23) at layer 9,
+and +0.19 (0.12 to 0.26) at all layers. The reverse
+arm finds no counterpart to that help in the Twi–English state: set into English decisions it
+moves the right margin almost exactly as random does (both lower it by 0.6–0.8 nats at layers
+6–9; +0.01 against −0.14 at layer 14; −0.46 against −0.49 with every layer set at once). Its
+contrast is +0.21 (0.10 to 0.32) and +0.27 (0.13 to 0.41) at layers 4 and 5, sits between −0.15
+and +0.16 at the other single layers, a little below zero with tight intervals from layer 18 to
+30 (−0.04 to −0.09), and is +0.04 (−0.24 to +0.31) with every layer set at once. (An earlier
+version of this file said the contrast's interval includes zero at every layer; it does not, as
+the viewer's screen shows.) Ministral's primary arm is flat: every source within ±0.07 of no change
 at every layer, the contrast +0.02 (−0.01 to +0.06). Its Twi arm (207 decisions, 202 run) orders the sources as
 Qwen's does but raises the right margin rather than lowering it, at a third of the size: at
 layer 16 the English twin +0.10, the other English request +0.09, halfway +0.06, the
@@ -290,7 +296,7 @@ English twin lowers its log-odds by 0.36 nats and the other English request by 0
 0.15–0.16 for random, halfway and the Twi–English twin; the contrast is −0.12 (−0.17 to −0.07)
 at all layers and below zero at 27 of 34 layers (layer 16: −0.16, −0.21 to −0.12). Qwen's harm
 contrasts sit at zero over all layers (−0.02 and +0.04) because every source lowers its harm
-margin by 0.8–1.2 nats. Ministral's reverse arm (150, 143 run) is a null like Qwen's: the
+margin by 0.8–1.2 nats. Ministral's reverse arm (150, 143 run) is small everywhere: the
 Twi–English state moves the English right margin by at most ±0.08 nats at any layer, +0.02 at
 layer 28 against random's −0.02 (contrast +0.05, +0.02 to +0.07), −0.08 against −0.03 at all
 layers (contrast −0.05, −0.11 to +0.02).
