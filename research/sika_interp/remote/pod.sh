@@ -188,11 +188,11 @@ proxy)
   log "$name proxy with $(basename "$append") starting"
   ;;
 restate)
-  # The restatement probe (sika_interp.restate) over the study's 600 triples (the matched and
-  # more-twins runs' traces under traces/), in the background.
+  # The restatement probe (sika_interp.restate) over every study run's traces under traces/
+  # (matched, extra Twi–English and more-twins: the 600 triples), in the background.
   name=${2:?restate qwen|ministral}
   case "$name" in qwen) model=Qwen/Qwen3.5-9B; base=8000 ;; ministral) model=$MINISTRAL; base=8002 ;; esac
-  traces=$(ls "$ROOT"/traces/study-matched-"$name"/traces.jsonl "$ROOT"/traces/study-more-twins-"$name"/traces.jsonl)
+  traces=$(ls "$ROOT"/traces/study-*-"$name"/traces.jsonl)
   (cd "$HERE" && setsid nohup "$VENVS/client/bin/python" -m sika_interp.restate probe \
     --traces $traces --model "$model" --base-url "http://localhost:$base/v1" \
     --config "$HERE/configs/$name.toml" --out "$ROOT/outputs/restate-$name.jsonl" ${RESTATE_ARGS:-} \
@@ -201,15 +201,19 @@ restate)
   ;;
 study-restate)
   # The study's 600 triples again through the proxy (translate-then-act), in the background:
-  # the matched part and the more-twins part, as `study` plays them.
+  # the matched, extra Twi–English and more-twins parts, as `study` plays them.
   name=${2:?study-restate qwen|ministral}
   export CONFIG="$HERE/configs/$name-restate.toml"
   (setsid nohup bash "$0" eval "$name" --run.dir "study-restate-matched-$name" < /dev/null > /dev/null 2>&1 &)
   ids=$(cd "$HERE" && "$VENVS/client/bin/python" -c \
+    "import json; from sika_interp.tasks import extra_en_tw_tasks; print(json.dumps([t.data.id for t in extra_en_tw_tasks()]))")
+  (setsid nohup bash "$0" eval "$name" --env.taskset.tasks_per_combo 20 --select.include.ids "$ids" \
+    --run.dir "study-restate-extra-$name" < /dev/null > /dev/null 2>&1 &)
+  ids=$(cd "$HERE" && "$VENVS/client/bin/python" -c \
     "import json; from sika_interp.tasks import more_twin_tasks; print(json.dumps([t.data.id for t in more_twin_tasks()]))")
   (setsid nohup bash "$0" eval "$name" --env.taskset.tasks_per_combo 30 --select.include.ids "$ids" \
     --run.dir "study-restate-more-$name" < /dev/null > /dev/null 2>&1 &)
-  log "study-restate $name started (matched + more)"
+  log "study-restate $name started (matched + extra + more)"
   ;;
 *)
   sed -n '2,10p' "$0"; exit 2

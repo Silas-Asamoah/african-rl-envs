@@ -576,8 +576,9 @@ def patched_replays(rows: list[dict], plan: dict, lang: str, swap: str, controls
 
 RESTATE = {
     "rows": "restate/restate-{key}.jsonl",
-    "rerun": ("restate/study-restate-matched-{key}/traces.jsonl", "restate/study-restate-more-{key}/traces.jsonl"),
-    "original": ("study-matched-{key}/traces.jsonl", "study-more-twins-{key}/traces.jsonl"),
+    "rerun": ("restate/study-restate-matched-{key}/traces.jsonl", "restate/study-restate-extra-{key}/traces.jsonl",
+              "restate/study-restate-more-{key}/traces.jsonl"),
+    "original": ("study-matched-{key}/traces.jsonl", "study-extra-entw-{key}/traces.jsonl", "study-more-twins-{key}/traces.jsonl"),
 }
 
 
