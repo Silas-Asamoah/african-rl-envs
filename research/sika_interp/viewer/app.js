@@ -568,6 +568,91 @@ async function drawPatchCompare(T, st, panel) {
   cmp.innerHTML = col("unpatched") + col(st.setting);
 }
 
+// ---------- comprehension or policy ----------
+// The restatement probe and the translate-then-act rerun as tables per language, with a browser
+// over every request (its grade and restatement) and every paired task (its rendering).
+const RSB = {}, RSD = {};
+const RSCAT = ["all", "payments", "credit", "check_first", "scams", "injection"];
+function renderRestated(M) {
+  const any = Object.values(DATA.models).some(m => m.restated);
+  $("restated").hidden = !any; document.querySelectorAll('nav a[href="#restated"]').forEach(a => a.hidden = !any);
+  const host = $("rs-panels"); host.innerHTML = "";
+  if (!M.restated) { host.innerHTML = '<p class="def">No restatement results for this model.</p>'; return; }
+  const st = RSB[model] = RSB[model] || { language: "tw", category: "all", understood: "all", outcome: "all", pairLanguage: "tw", change: "all" };
+  const R = M.restated, P = R.probe;
+  const pct = c => (c ? `${(100 * c[0]).toFixed(0)} (${(100 * c[1]).toFixed(0)}–${(100 * c[2]).toFixed(0)})` : "–");
+  const pts = c => (c ? `<span style="${c[1] > 0 || c[2] < 0 ? "font-weight:700" : "opacity:0.85"}">${c[0] >= 0 ? "+" : ""}${(100 * c[0]).toFixed(1)} (${(100 * c[1]).toFixed(1)} to ${(100 * c[2]).toFixed(1)})</span>` : "–");
+  const langs = ["en", "en-tw", "tw"].filter(l => P.languages[l]);
+  const p1 = document.createElement("div"); p1.className = "panel";
+  let h = `<h3>Restatement probe</h3><table class="grid"><thead><tr><th>language</th><th>n</th><th>empty</th><th>restated correctly</th><th>parsed</th><th>action</th><th>amounts</th><th>numbers</th><th>scam flag</th><th>not right · restated right</th><th>not right · restated wrong</th><th>difference</th></tr></thead><tbody>`;
+  for (const l of langs) { const L = P.languages[l];
+    h += `<tr><td style="color:${COL[l]}">${LANG[l]}</td><td>${L.n}</td><td>${L.empty}</td><td><b>${pct(L.understood)}</b></td><td>${pct(L.parsed)}</td><td>${pct(L.action_ok)}</td><td>${pct(L.amounts_ok)}</td><td>${pct(L.phones_ok)}</td><td>${pct(L.trick_ok)}</td><td>${pct(L.not_right_given_understood)}</td><td>${pct(L.not_right_given_not_understood)}</td><td>${pts(L.not_right_difference)}</td></tr>`; }
+  h += `</tbody></table><p class="def">Rates in % with 95% intervals over triples; "not right · restated right" is the share of episodes ending not right among requests restated correctly, and the difference is wrong minus right.</p>`;
+  const cats = RSCAT.slice(1).filter(c => langs.some(l => P.languages[l].understood_by_category[c]));
+  h += `<table class="grid"><thead><tr><th>restated correctly by category</th>${cats.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>`;
+  for (const l of langs) h += `<tr><td style="color:${COL[l]}">${LANG[l]}</td>${cats.map(c => `<td>${pct(P.languages[l].understood_by_category[c])}</td>`).join("")}</tr>`;
+  h += `</tbody></table>`;
+  const fl = Object.keys(P.failures || {});
+  if (fl.length) {
+    h += `<table class="grid"><thead><tr><th>failures, English twin right</th><th>n</th><th>restated correctly</th><th>amounts</th><th>action</th><th>scam flag</th><th>restated correctly / failures, by category</th></tr></thead><tbody>`;
+    for (const l of fl) { const F = P.failures[l];
+      h += `<tr><td style="color:${COL[l]}">${LANG[l]}</td><td>${F.n}</td><td><b>${pct(F.understood)}</b></td><td>${pct(F.amounts_ok)}</td><td>${pct(F.action_ok)}</td><td>${pct(F.trick_ok)}</td><td class="def">${Object.keys(F.by_category).map(c => `${c} ${F.understood_by_category[c]}/${F.by_category[c]}`).join(" · ")}</td></tr>`; }
+    h += `</tbody></table>`;
+  }
+  h += `<div class="controls rs-controls"></div><p class="def rs-count"></p><div class="rs-list"></div>`;
+  p1.innerHTML = h; host.appendChild(p1);
+  restateBrowser(R, st, p1);
+  if (R.rerun) {
+    const C = R.rerun, p2 = document.createElement("div"); p2.className = "panel";
+    let g = `<h3>Translate-then-act</h3><table class="grid"><thead><tr><th>language</th><th>n</th><th>study right</th><th>rerun right</th><th>Δ right</th><th>study harmful</th><th>rerun harmful</th><th>Δ harmful</th><th>marker used</th><th>rendered: study → rerun</th><th>faithful</th><th>gap closed</th></tr></thead><tbody>`;
+    for (const l of ["en", "en-tw", "tw"]) { const L = C.languages[l]; if (!L) continue;
+      g += `<tr><td style="color:${COL[l]}">${LANG[l]}</td><td>${L.n}</td><td>${(100 * L.right.original).toFixed(1)}</td><td>${(100 * L.right.rerun).toFixed(1)}</td><td>${pts(L.d_right)}</td><td>${(100 * L.harmful.original).toFixed(1)}</td><td>${(100 * L.harmful.rerun).toFixed(1)}</td><td>${pts(L.d_harmful)}</td><td>${(100 * L.marker).toFixed(0)}%</td><td>${(100 * L.rendered_original).toFixed(0)} → ${pct(L.rendered)}</td><td>${pct(L.rendered_faithful)}</td><td>${L.gap_closed == null ? "–" : (100 * L.gap_closed).toFixed(0) + "% of " + (100 * L.gap).toFixed(1)}</td></tr>`; }
+    g += `</tbody></table><p class="def">${C.complete ? `All ${C.tasks} tasks replayed.` : `Partial: ${C.n} of ${C.tasks} tasks replayed before the pod ended; the study figures are those tasks'.`} Δ in percentage points, paired by task, 95% bootstrap over triples; gap closed = Δ right over the study's English-minus-this-language gap on the same tasks.</p>`;
+    g += `<div class="controls rs-pair-controls"></div><p class="def rs-pair-count"></p><div class="rs-list rs-pairs"></div>`;
+    p2.innerHTML = g; host.appendChild(p2);
+    pairBrowser(R, st, p2);
+  }
+}
+const rsData = R => RSD[R.file] || (RSD[R.file] = getJSON(R.file));
+const rsOutcome = s => (s === 1 ? '<span style="color:var(--good)">right</span>' : s === -1 ? '<span style="color:var(--harm)">harmful</span>' : "other");
+function rsSelect(label, key, options, value, onchange) {
+  const sel = document.createElement("label"); sel.className = "def"; sel.innerHTML = `${label} <select>${options.map(([v, t]) => `<option value="${v}" ${v === value ? "selected" : ""}>${t}</option>`).join("")}</select>`;
+  sel.querySelector("select").onchange = e => onchange(e.target.value); return sel;
+}
+async function restateBrowser(R, st, panel) {
+  const ctl = panel.querySelector(".rs-controls"), list = panel.querySelector(".rs-list"), count = panel.querySelector(".rs-count");
+  const redraw = () => restateBrowser(R, st, panel);
+  ctl.innerHTML = "";
+  ctl.appendChild(rsSelect("language", "language", [["en", "English"], ["en-tw", "Twi–English"], ["tw", "Twi"]], st.language, v => { st.language = v; redraw(); }));
+  ctl.appendChild(rsSelect("category", "category", RSCAT.map(c => [c, c]), st.category, v => { st.category = v; redraw(); }));
+  ctl.appendChild(rsSelect("restated", "understood", [["all", "all"], ["yes", "correctly"], ["no", "wrongly"]], st.understood, v => { st.understood = v; redraw(); }));
+  ctl.appendChild(rsSelect("episode", "outcome", [["all", "all"], ["right", "ended right"], ["notright", "ended not right"], ["harmful", "ended harmful"]], st.outcome, v => { st.outcome = v; redraw(); }));
+  list.innerHTML = '<p class="loading">Loading requests…</p>';
+  const d = await rsData(R);
+  const rows = d.requests.filter(r => r.language === st.language && (st.category === "all" || r.category === st.category)
+    && (st.understood === "all" || (st.understood === "yes") === !!r.grade.understood)
+    && (st.outcome === "all" || (st.outcome === "right" ? r.score === 1 : st.outcome === "harmful" ? r.score === -1 : r.score !== 1)));
+  count.textContent = `${rows.length} requests`;
+  const flag = (ok, name) => `<span style="color:${ok === null || ok === undefined ? "var(--ink2)" : ok ? "var(--good)" : "var(--harm)"}">${ok === null || ok === undefined ? "·" : ok ? "✓" : "✗"} ${name}</span>`;
+  list.innerHTML = rows.slice(0, 200).map(r => `<div class="rs-row"><span class="who">${esc(r.task_id.replace("eval/", ""))}</span> · episode ${rsOutcome(r.score)} · restated ${r.grade.understood ? '<b style="color:var(--good)">correctly</b>' : '<b style="color:var(--harm)">wrongly</b>'}${r.empty ? " (empty reply)" : ""}
+    <div class="rs-flags">${flag(r.grade.parsed, "parsed")}${flag(r.grade.action_ok, "action" + (r.grade.action ? ": " + esc(r.grade.action) : ""))}${flag(r.grade.amounts_ok, "amounts")}${flag(r.grade.phones_ok, "numbers")}${flag(r.grade.trick_ok, "scam flag" + (r.grade.trick === null || r.grade.trick === undefined ? "" : ": " + r.grade.trick))}</div>
+    ${r.summary ? `<div>${esc(r.summary)}</div>` : ""}
+    <details><summary class="def">request and restatement</summary><pre>${esc(r.prompt)}</pre><pre>${esc(r.restatement ? JSON.stringify(r.restatement, null, 1) : "(no JSON)")}</pre></details></div>`).join("") + (rows.length > 200 ? `<p class="def">First 200 of ${rows.length} shown.</p>` : "");
+}
+async function pairBrowser(R, st, panel) {
+  const ctl = panel.querySelector(".rs-pair-controls"), list = panel.querySelector(".rs-pairs"), count = panel.querySelector(".rs-pair-count");
+  const redraw = () => pairBrowser(R, st, panel);
+  ctl.innerHTML = "";
+  ctl.appendChild(rsSelect("language", "pairLanguage", [["en", "English"], ["en-tw", "Twi–English"], ["tw", "Twi"]], st.pairLanguage, v => { st.pairLanguage = v; redraw(); }));
+  ctl.appendChild(rsSelect("change", "change", [["all", "all"], ["up", "wrong → right"], ["down", "right → wrong"], ["same", "unchanged"]], st.change, v => { st.change = v; redraw(); }));
+  list.innerHTML = '<p class="loading">Loading pairs…</p>';
+  const d = await rsData(R);
+  const rows = d.pairs.filter(p => p.language === st.pairLanguage && (st.change === "all" || (st.change === "up" ? p.original !== 1 && p.rerun === 1 : st.change === "down" ? p.original === 1 && p.rerun !== 1 : (p.original === 1) === (p.rerun === 1))));
+  count.textContent = `${rows.length} tasks`;
+  list.innerHTML = rows.slice(0, 200).map(p => `<div class="rs-row"><span class="who">${esc(p.task_id.replace("eval/", ""))}</span> · study ${rsOutcome(p.original)} → rerun ${rsOutcome(p.rerun)}
+    <div>${p.rendering ? `<span class="def">rendering:</span> ${esc(p.rendering)}` : '<span class="def">no rendering found in the first turn</span>'}</div></div>`).join("") + (rows.length > 200 ? `<p class="def">First 200 of ${rows.length} shown.</p>` : "");
+}
+
 // ---------- whole-layer sweep ----------
 let sweepLang = "en-tw";
 function renderSweep(M) {
@@ -878,7 +963,7 @@ function render() {
   const M = DATA.models[model];
   document.querySelectorAll(".toggle button").forEach(b => b.setAttribute("aria-pressed", b.dataset.model === model));
   S.decision = null; S.neuron = null; S.pins = []; SM = null;
-  renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M); renderSteered(M); renderPatched(M); renderSweep(M);
+  renderBehaviour(M); renderReadouts(M); renderMap(M); renderAnchors(M); renderSteered(M); renderPatched(M); renderRestated(M); renderSweep(M);
   $("dash").innerHTML = '<p class="def">Select a neuron on the map, in the steering matrix or in the circuit.</p>';
   $("decision").innerHTML = '<p class="def">Select a cell in the matrix: a column is one decision, a row one neuron.</p>';
   drawMatrix().then(renderCircuit).catch(e => { $("s-legend").innerHTML = `<span class="def">Steering files not available (${esc(e.message)}).</span>`; });

@@ -151,3 +151,11 @@ footer { max-width: 1640px; margin: 0 auto; color: var(--muted); font-size: 11.5
 .terms dt { color: var(--ink); white-space: nowrap; }
 .terms dd { margin: 0; color: var(--muted); }
 @media (max-width: 560px) { .terms dl { grid-template-columns: minmax(0, 1fr); gap: 2px; } .terms dd { margin-bottom: 8px; } }
+
+/* comprehension or policy: request and pair browsers */
+.rs-list { display: grid; gap: 6px; margin-top: 8px; }
+.rs-row { border-top: 1px solid var(--line, #333); padding: 6px 0; font-size: 0.85rem; }
+.rs-row .who { color: var(--ink2, #aaa); }
+.rs-row details { margin-top: 4px; }
+.rs-row pre { white-space: pre-wrap; font-size: 0.78rem; margin: 4px 0; }
+.rs-flags span { margin-right: 8px; }
