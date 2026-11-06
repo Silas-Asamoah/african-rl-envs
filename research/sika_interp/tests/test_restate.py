@@ -99,6 +99,9 @@ def test_errored_rollouts_without_a_score_are_left_out(tmp_path):
 def test_rendering_is_read_from_the_reasoning_and_compare_pairs_runs_by_task():
     assert rendering("Let me think.\nIn English: Send GH₵10 to Ama on 0241234567.\n\nNow the tools.") == "Send GH₵10 to Ama on 0241234567."
     assert rendering("no rendering") is None
+    assert rendering('The user is speaking in Twi. This roughly translates to: "Send GH₵265 to Adwoa, please." So I') == "Send GH₵265 to Adwoa, please."
+    assert rendering("They're saying \"Send GH₵40 to Kwesi, I gave you.\" This appears") == "Send GH₵40 to Kwesi, I gave you."
+    assert rendering("The user wants to send GH₵90 to Kwaku. No cue here at all.") is None
     orig, rerun = {}, {}
     for seed in range(1000000, 1000004):
         for lang, o, r in (("en", 1, 1), ("tw", 0 if seed % 2 else 1, 1)):

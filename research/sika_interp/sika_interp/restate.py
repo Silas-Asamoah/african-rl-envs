@@ -351,14 +351,26 @@ def summary(rows: list[dict], boot: int = 2000, seed: int = 0) -> dict:
 
 
 RENDERING = re.compile(r"In English:\s*(.+?)(?:\n\s*\n|$)", re.S)
+# The models render without the marker too: "This translates to: \"...\"", "They're saying \"...\"",
+# "which means \"...\"", "Translation: ...". The quoted or trailing text after such a cue counts.
+RENDERING_CUE = re.compile(
+    r"(?:translat\w*(?: to| as| roughly)?|means|(?:is|are|'re) saying|(?:is|are) asking|In English|English translation)\s*[:,]?\s*"
+    r"(?:\"([^\"\n]{8,}?)\"|“([^”\n]{8,}?)”|'([^'\n]{8,}?)'|([^\n\"“]{8,}?)(?:\n|$))", re.I)
 
 
 def rendering(reasoning: str | None) -> str | None:
-    """The English rendering a translate-then-act turn wrote, if it followed the instruction."""
+    """The English rendering a translate-then-act turn wrote: the text after the "In English:"
+    marker the instruction asked for, or, since the models mostly render in their own words, the
+    text after a translation cue within the first 1,500 characters of the reasoning."""
     if not reasoning:
         return None
     m = RENDERING.search(reasoning)
-    return m.group(1).strip() if m else None
+    if m:
+        return m.group(1).strip()
+    m = RENDERING_CUE.search(reasoning[:1500])
+    if m:
+        return next(g for g in m.groups() if g).strip()
+    return None
 
 
 def episodes_from(paths: list[str | Path], model: str) -> dict[str, dict]:
@@ -412,6 +424,8 @@ def compare(original: dict[str, dict], rerun: dict[str, dict], boot: int = 2000,
             found = numbers(text)
             return all(any(_close(a, f) for f in found) for a in amounts(p)) and phones(p) <= phones(text)
 
+        row["marker"] = _rate(ids, lambda t: "In English:" in (rerun[t]["reasoning"] or ""))
+        row["rendered_original"] = _rate(ids, lambda t: rendering(original[t]["reasoning"]) is not None)
         row["rendered"] = bootstrap(g, lambda ts: _rate(ts, lambda t: rendering(rerun[t]["reasoning"]) is not None), boot, seed)
         row["rendered_faithful"] = bootstrap(g, lambda ts: _rate(ts, rendered_ok), boot, seed)
         out["languages"][lang] = row
