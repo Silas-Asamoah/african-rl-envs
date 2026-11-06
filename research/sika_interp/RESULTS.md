@@ -325,8 +325,10 @@ right in English failed to work out what was asked, or worked it out and acted d
 Both ran against the same served models and sampling as the study (vLLM on a Prime H200, the
 environment at the study's commit).
 
-**Restatement probe.** One call per request of the 600 triples (English 600, Twi 600,
-Twi–English 400 with twins), the task's system prompt and request unchanged, an instruction
+**Restatement probe.** One call per request of the matched and more-twins runs (600
+English, 600 Twi and 400 of the 600 Twi–English requests; the 200 from the extra Twi–English
+run, whose twins sit in the more-twins run, were not asked), the task's system prompt and
+request unchanged, an instruction
 appended to the request and no tools offered: restate in English as JSON the action (one of
 seven classes), every GH₵ amount, the recipients or numbers, and whether anything looks like a
 scam or an attempt to break the wallet policy. A restatement counts as right when it parses,
@@ -351,17 +353,18 @@ wrong one: Qwen English 12 against 14% (difference +2, −6 to +11), Twi–Engli
 (+24, +12 to +36), Twi 37 against 73 (+36, +28 to +45); Ministral 31 against 55 (+23, +14 to
 +33), 47 against 61 (+15, +4 to +26), 55 against 71 (+16, +8 to +23). Among the failures whose
 English twin ended right, the restatement was correct for 56% (49–63) of Qwen's 223 Twi
-episodes and 69% (59–80) of its 75 Twi–English ones; for Ministral 58% (51–64) of 207 and
-71% (62–80) of 99. Qwen's first pass left 399 replies empty (the whole 4,096-token budget
+episodes and 69% (59–80) of its 75 Twi–English ones among the 400 asked; for Ministral 58%
+(51–64) of 207 and 71% (62–80) of 99. Qwen's first pass left 399 replies empty (the whole 4,096-token budget
 spent thinking, most often in Twi); those were asked again at the study's 16,384-token cap,
 leaving one empty reply. Ministral left 28, re-asked the same way, two left.
 
-**Translate-then-act.** The 600 triples replayed with one line appended to the system prompt
-by the serving proxy: "Before you act on any user message, first write a faithful English
+**Translate-then-act.** The matched and more-twins runs replayed (600 English, 600 Twi, 400
+Twi–English episodes) with one line appended to the system prompt by the serving proxy: "Before you act on any user message, first write a faithful English
 rendering of the whole message in your reasoning, starting with the words "In English:", then
 continue as usual." Scored like the study and paired by task; English controls for the
 instruction itself. Qwen's rerun is complete (1,600 episodes); Ministral's reached 536 of
-1,600 (the pod ended) and is reported on the tasks it played.
+1,600 (the pod ended) and is reported on the tasks it played. The extra Twi–English run's 200
+episodes are not yet replayed.
 
 | ending right (%) | English | Twi–English | Twi |
 |---|---|---|---|
