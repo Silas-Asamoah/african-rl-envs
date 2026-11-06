@@ -152,10 +152,56 @@ footer { max-width: 1640px; margin: 0 auto; color: var(--muted); font-size: 11.5
 .terms dd { margin: 0; color: var(--muted); }
 @media (max-width: 560px) { .terms dl { grid-template-columns: minmax(0, 1fr); gap: 2px; } .terms dd { margin-bottom: 8px; } }
 
-/* comprehension or policy: request and pair browsers */
-.rs-list { display: grid; gap: 6px; margin-top: 8px; }
-.rs-row { border-top: 1px solid var(--line, #333); padding: 6px 0; font-size: 0.85rem; }
-.rs-row .who { color: var(--ink2, #aaa); }
-.rs-row details { margin-top: 4px; }
-.rs-row pre { white-space: pre-wrap; font-size: 0.78rem; margin: 4px 0; }
-.rs-flags span { margin-right: 8px; }
+/* Comprehension or policy. Each experiment: a head, chart cards, then a browser panel. */
+.rs-part { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.rs-part + .rs-part { margin-top: 28px; }
+/* Dot-and-interval rows (HTML, so text keeps its size on a phone): label | track | value, with
+   label and value widths set in ch by the script. Where label and value text leave too little
+   room (.long), narrow cards put the track on its own line under the label and value. */
+.ci { container-type: inline-size; display: flex; flex-direction: column; font-size: 11.5px; font-variant-numeric: tabular-nums; min-width: 0; }
+.ci + .ci { margin-top: 14px; }
+.ci-row { display: grid; grid-template-columns: var(--lw, 12ch) minmax(0, 1fr) var(--vw, 10ch); grid-template-areas: "l t v"; column-gap: 12px; align-items: center; min-height: 20px; }
+.ci-label { grid-area: l; color: var(--ink-2); display: flex; flex-direction: column; line-height: 1.3; white-space: nowrap; }
+.ci-val { grid-area: v; color: var(--ink-2); display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; white-space: nowrap; }
+.ci-val.sig { color: var(--ink); font-weight: 700; }
+.ci-label small, .ci-val small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.ci-int { color: var(--muted); font-weight: 400; }
+.ci-track { grid-area: t; position: relative; height: 18px; }
+.ci-axis { min-height: 0; }
+.ci-axis .ci-track { height: 16px; }
+.ci-axis .tl { position: absolute; top: 0; transform: translateX(-50%); color: var(--muted); font-size: 11px; line-height: 16px; white-space: nowrap; background: var(--bg); padding: 0 3px; }
+.ci-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.ci-tick.zero { background: var(--muted); }
+.ci-bar { position: absolute; top: 50%; height: 8px; margin-top: -4px; border-inline: 1.5px solid currentColor; background: linear-gradient(currentColor, currentColor) center / 100% 2px no-repeat; opacity: 0.7; }
+.ci-link { position: absolute; top: 50%; height: 2px; margin-top: -1px; background: currentColor; opacity: 0.35; }
+.ci-dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 1.5px var(--bg); }
+.ci-dot.hollow { background: var(--bg); border: 2px solid currentColor; box-shadow: none; }
+.ci-row:has(small) { padding: 3px 0; }
+.rs-part .chart-card table.grid { font-size: 11.5px; }
+.ci-group { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; padding: 10px 0 2px; }
+@container (max-width: 460px) {
+  .ci.long .ci-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "l v" "t t"; row-gap: 0; padding: 0 0 8px; }
+  .ci.long .ci-axis { padding: 0 0 4px; }
+  .ci.long .ci-axis { grid-template-areas: "t t"; }
+  .ci.long .ci-axis .ci-label, .ci.long .ci-axis .ci-val { display: none; }
+}
+/* Browsers: rows as cards in a bounded, scrolling grid. */
+.rs-seg { display: inline-flex; align-items: center; gap: 6px; }
+.rs-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 8px;
+  max-height: min(760px, 75vh); overflow: auto; border: 1px solid var(--line); background: #0e0e0e; padding: 8px; }
+.rs-list > .loading { padding: 4px; }
+.rs-row { border: 1px solid var(--line); background: var(--panel); padding: 10px; display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; }
+.rs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.rs-head .chip { margin: 0; }
+.rs-kv { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.rs-id { color: var(--ink-2); overflow-wrap: anywhere; margin-right: 4px; }
+.rs-flags { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 11.5px; }
+.rs-flags .ok { color: var(--good); }
+.rs-flags .no { color: var(--harm); }
+.rs-flags .na { color: var(--muted); }
+.rs-sum { color: var(--ink); overflow-wrap: anywhere; }
+.rs-quote { border-left: 2px solid var(--line); padding-left: 8px; display: flex; flex-direction: column; gap: 2px; }
+.rs-row details summary { cursor: pointer; width: fit-content; }
+.rs-row details summary:hover { color: var(--ink); }
+.rs-row details[open] summary { margin-bottom: 6px; }
+.rs-row details .box + .box { margin-top: 6px; }
